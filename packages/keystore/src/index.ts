@@ -148,6 +148,10 @@ const addressSchema = z.custom<Address>(
   (value) => typeof value === "string" && addressPattern.test(value),
   "address must be a 20-byte hex address"
 );
+const hexSchema = z.custom<`0x${string}`>(
+  (value) => typeof value === "string" && /^0x[a-fA-F0-9]*$/u.test(value),
+  "value must be hex-prefixed"
+);
 
 export const argon2idKdfParamsSchema = z
   .object({
@@ -224,7 +228,18 @@ export const keycatKeystoreV1Schema = z
         createdAt: z.string().refine((value) => !Number.isNaN(Date.parse(value)), {
           message: "createdAt must be an ISO-compatible timestamp"
         }),
-        label: z.string().min(1).max(120).optional()
+        label: z.string().min(1).max(120).optional(),
+        walletMode: z
+          .enum(["plain-eoa", "smart-account", "eip7702"])
+          .optional(),
+        accountAddress: addressSchema.optional(),
+        signerAddress: addressSchema.optional(),
+        smartAccountImplementation: z
+          .enum(["Hybrid", "Stateless7702"])
+          .optional(),
+        smartAccountChainId: z.number().int().positive().optional(),
+        smartAccountDeploySalt: hexSchema.optional(),
+        eip7702Implementation: addressSchema.optional()
       })
       .strict()
   })

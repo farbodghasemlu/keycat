@@ -38,6 +38,9 @@ export default function WidgetPage() {
     <KeycatWallet
       mode="embedded"
       chainId={config.chainId}
+      bundlerUrl={process.env.NEXT_PUBLIC_BUNDLER_URL}
+      oneShotRelayerUrl={process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL}
+      oneShotWebhookUrl={process.env.NEXT_PUBLIC_ONESHOT_WEBHOOK_URL}
       transport={transport}
     />
   );

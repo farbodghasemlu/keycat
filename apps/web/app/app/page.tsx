@@ -18,6 +18,9 @@ export default function AppPage() {
     <KeycatWallet
       mode="fullpage"
       chainId={getChainId(process.env.NEXT_PUBLIC_CHAIN)}
+      bundlerUrl={process.env.NEXT_PUBLIC_BUNDLER_URL}
+      oneShotRelayerUrl={process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL}
+      oneShotWebhookUrl={process.env.NEXT_PUBLIC_ONESHOT_WEBHOOK_URL}
     />
   );
 }

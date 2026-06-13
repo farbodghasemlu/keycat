@@ -11,6 +11,7 @@ import type {
   KeycatChainConfig,
   KeycatHex,
   KeycatSigner,
+  KeycatSignerSnapshot,
   KeycatTransactionRequest,
   KeycatTypedDataPayload,
   PublicRpcProxy
@@ -59,6 +60,7 @@ export type KeycatPendingRequest = {
 
 export type KeycatControllerSnapshot = {
   address?: KeycatAddress;
+  signer?: KeycatSignerSnapshot;
   isUnlocked: boolean;
   pending?: KeycatPendingRequest;
 };
@@ -167,6 +169,7 @@ export class KeycatProviderController implements KeycatProvider {
   private readonly publicRpc: PublicRpcProxy;
   private readonly connectedOrigins = new Set<string>();
   private readonly stateListeners = new Set<StateListener>();
+  private unsubscribeSigner?: () => void;
   private readonly providerListeners = new Map<
     KeycatProviderEvent,
     Set<KeycatProviderEventListener>
@@ -177,6 +180,7 @@ export class KeycatProviderController implements KeycatProvider {
     this.chain = chain;
     this.rpcUrl = rpcUrl;
     this.signer = signer;
+    this.unsubscribeSigner = signer?.subscribe?.(() => this.emitState());
     this.publicRpc =
       publicRpc ??
       createPublicClient({
@@ -196,8 +200,10 @@ export class KeycatProviderController implements KeycatProvider {
   }
 
   setSigner(signer: KeycatSigner): void {
+    this.unsubscribeSigner?.();
     this.signer?.destroy();
     this.signer = signer;
+    this.unsubscribeSigner = signer.subscribe?.(() => this.emitState());
     if (this.pending?.status === "needs-wallet") {
       this.pending.status = "confirm";
     }
@@ -205,6 +211,8 @@ export class KeycatProviderController implements KeycatProvider {
   }
 
   lock(message = "Wallet locked."): void {
+    this.unsubscribeSigner?.();
+    this.unsubscribeSigner = undefined;
     this.signer?.destroy();
     this.signer = undefined;
     this.connectedOrigins.clear();
@@ -214,6 +222,20 @@ export class KeycatProviderController implements KeycatProvider {
     }
     this.emitProviderEvent("accountsChanged", []);
     this.emitProviderEvent("disconnect", { code: 4900, message });
+    this.emitState();
+  }
+
+  async setGaslessMode(enabled: boolean): Promise<void> {
+    if (!this.signer) {
+      throw new ProviderRpcError(4100, "Unlock Keycat before changing gasless mode.");
+    }
+    if (!this.signer.setGaslessMode) {
+      throw new ProviderRpcError(
+        4200,
+        "The current Keycat signer does not support gasless mode."
+      );
+    }
+    await this.signer.setGaslessMode(enabled);
     this.emitState();
   }
 
@@ -334,6 +356,10 @@ export class KeycatProviderController implements KeycatProvider {
           {
             label: "Account",
             value: this.signer?.address ?? "Unlock required"
+          },
+          {
+            label: "Signer",
+            value: this.signer?.signerAddress ?? "Unlock required"
           },
           { label: "Network", value: this.chain.name }
         ]
@@ -521,6 +547,14 @@ export class KeycatProviderController implements KeycatProvider {
   private createSnapshot(): KeycatControllerSnapshot {
     return {
       address: this.signer?.address,
+      signer: this.signer
+        ? this.signer.getSnapshot?.() ?? {
+            address: this.signer.address,
+            signerAddress: this.signer.signerAddress,
+            mode: this.signer.mode,
+            implementation: this.signer.implementation
+          }
+        : undefined,
       isUnlocked: this.signer !== undefined,
       pending: this.pending ? toPublicPending(this.pending) : undefined
     };

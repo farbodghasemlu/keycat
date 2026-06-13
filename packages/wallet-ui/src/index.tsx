@@ -35,10 +35,16 @@ import {
   type KeycatRequestArguments,
   type KeycatRequestContext
 } from "./controller.js";
-import { createLocalEoaSigner } from "./signer.js";
+import {
+  createPlainEoaSigner,
+  createSmartAccountSigner,
+  createUpgraded7702Signer,
+  type KeycatSignerOptions
+} from "./signer.js";
 import type {
   KeycatChainConfig,
   KeycatSigner,
+  KeycatSignerSnapshot,
   KeycatTransactionRequest,
   KeycatTypedDataPayload,
   PublicRpcProxy
@@ -53,6 +59,7 @@ export type {
   KeycatRequestContext,
   KeycatChainConfig,
   KeycatSigner,
+  KeycatSignerSnapshot,
   KeycatTransactionRequest,
   KeycatTypedDataPayload,
   PublicRpcProxy
@@ -63,6 +70,15 @@ export {
   createKeycatController,
   serializeProviderError
 };
+export {
+  PlainEoaSigner,
+  SmartAccountSigner,
+  Upgraded7702Signer,
+  buildGaslessDelegationConfig,
+  createPlainEoaSigner,
+  createSmartAccountSigner,
+  createUpgraded7702Signer
+} from "./signer.js";
 
 export type KeycatWalletMode = "embedded" | "fullpage";
 
@@ -140,6 +156,9 @@ export type KeycatWalletProps = {
   chain?: KeycatChainConfig;
   chainId?: number;
   rpcUrl?: string;
+  bundlerUrl?: string;
+  oneShotRelayerUrl?: string;
+  oneShotWebhookUrl?: string;
   autoLockMs?: number;
   lockOnVisibilityHidden?: boolean;
   transport?: KeycatWalletTransport;
@@ -150,6 +169,9 @@ export function KeycatWallet({
   chain: chainOption,
   chainId,
   rpcUrl,
+  bundlerUrl,
+  oneShotRelayerUrl,
+  oneShotWebhookUrl,
   autoLockMs = 10 * 60 * 1000,
   lockOnVisibilityHidden = true,
   transport
@@ -159,6 +181,15 @@ export function KeycatWallet({
     [chainId, chainOption]
   );
   const { controller, snapshot } = useKeycatProvider({ chain, rpcUrl });
+  const signerOptions = useMemo(
+    () => ({
+      rpcUrl,
+      bundlerUrl,
+      oneShotRelayerUrl,
+      oneShotWebhookUrl
+    }),
+    [bundlerUrl, oneShotRelayerUrl, oneShotWebhookUrl, rpcUrl]
+  );
   const [screen, setScreen] = useState<"welcome" | "create" | "unlock" | "settings">(
     "welcome"
   );
@@ -257,6 +288,7 @@ export function KeycatWallet({
           mode={mode}
           pending={snapshot.pending}
           address={snapshot.address}
+          signer={snapshot.signer}
           onClose={
             hasPending
               ? () => controller.rejectPending("User dismissed the request.")
@@ -301,6 +333,7 @@ export function KeycatWallet({
             keystore={activeKeystore}
             chain={chain}
             rpcUrl={rpcUrl}
+            signerOptions={signerOptions}
             onDone={(message) => {
               setNotice(message);
               setScreen("welcome");
@@ -313,18 +346,31 @@ export function KeycatWallet({
           />
         ) : snapshot.isUnlocked && mode === "fullpage" ? (
           <UnlockedHome
-            address={snapshot.address}
+            signer={snapshot.signer}
             chainName={chain.name}
             onSettings={() => setScreen("settings")}
             onLock={() => {
               controller.lock("Wallet locked.");
               setScreen("welcome");
             }}
+            onGaslessToggle={async (enabled) => {
+              setError(undefined);
+              try {
+                await controller.setGaslessMode(enabled);
+              } catch (toggleError) {
+                setError(
+                  toggleError instanceof Error
+                    ? toggleError.message
+                    : "Could not change gasless mode."
+                );
+              }
+            }}
           />
         ) : screen === "create" ? (
           <CreateScreen
             chain={chain}
             rpcUrl={rpcUrl}
+            signerOptions={signerOptions}
             onBack={() => {
               setError(undefined);
               setScreen("welcome");
@@ -333,7 +379,7 @@ export function KeycatWallet({
             onCreated={(signer, keystore) => {
               controller.setSigner(signer);
               setActiveKeystore(keystore);
-              setNotice(`Created ${keystore.address}`);
+              setNotice(`Created ${signer.address}`);
               setScreen("welcome");
             }}
           />
@@ -341,6 +387,7 @@ export function KeycatWallet({
           <UnlockScreen
             chain={chain}
             rpcUrl={rpcUrl}
+            signerOptions={signerOptions}
             onBack={() => {
               setError(undefined);
               setScreen("welcome");
@@ -349,7 +396,7 @@ export function KeycatWallet({
             onUnlocked={(signer, keystore) => {
               controller.setSigner(signer);
               setActiveKeystore(keystore);
-              setNotice(`Unlocked ${keystore.address}`);
+              setNotice(`Unlocked ${signer.address}`);
               setScreen("welcome");
             }}
           />
@@ -376,6 +423,7 @@ function Header({
   mode,
   pending,
   address,
+  signer,
   onClose,
   onSettings,
   onLock
@@ -383,6 +431,7 @@ function Header({
   mode: KeycatWalletMode;
   pending?: KeycatPendingRequest;
   address?: string;
+  signer?: KeycatSignerSnapshot;
   onClose?: () => void;
   onSettings?: () => void;
   onLock?: () => void;
@@ -395,7 +444,9 @@ function Header({
           {pending
             ? pending.method
             : address
-              ? shortAddress(address)
+              ? `${shortAddress(address)} ${
+                  signer?.mode === "eip7702" ? "7702" : signer?.mode === "smart-account" ? "smart" : "EOA"
+                }`
               : mode === "embedded"
                 ? "Widget"
                 : "Wallet"}
@@ -459,12 +510,14 @@ function WelcomeScreen({
 function CreateScreen({
   chain,
   rpcUrl,
+  signerOptions,
   onBack,
   onError,
   onCreated
 }: {
   chain: KeycatChainConfig;
   rpcUrl?: string;
+  signerOptions: KeycatSignerOptions;
   onBack(): void;
   onError(message: string): void;
   onCreated(signer: KeycatSigner, keystore: KeycatKeystoreV1): void;
@@ -473,6 +526,7 @@ function CreateScreen({
   const [confirm, setConfirm] = useState("");
   const [recoveryEmail, setRecoveryEmail] = useState("");
   const [useBiometric, setUseBiometric] = useState(false);
+  const [upgradeInPlace, setUpgradeInPlace] = useState(false);
   const [busy, setBusy] = useState(false);
   const strength = getPasswordStrength(password);
 
@@ -496,12 +550,22 @@ function CreateScreen({
         label: "Keycat",
         webauthn
       });
-      downloadTextFile(exportKeystoreFile(keystore), `keycat-${keystore.address}.json`);
       const unlocked = await unlockKeystore(keystore, {
         password,
         webauthnHandle: webauthn ? browserWebAuthnPrf : undefined
       });
-      onCreated(createLocalEoaSigner(unlocked, chain, rpcUrl), keystore);
+      const signer = upgradeInPlace
+        ? await createUpgraded7702Signer(unlocked, chain, {
+            ...signerOptions,
+            relayUpgrade: true
+          })
+        : await createSmartAccountSigner(unlocked, chain, signerOptions);
+      const nextKeystore = withSignerMetadata(keystore, signer, chain);
+      downloadTextFile(
+        exportKeystoreFile(nextKeystore),
+        `keycat-${nextKeystore.address}.json`
+      );
+      onCreated(signer, nextKeystore);
       setPassword("");
       setConfirm("");
     } catch (error) {
@@ -542,6 +606,20 @@ function CreateScreen({
         />
         <span>Add device biometric (WebAuthn PRF)</span>
       </label>
+      <label className="kc-toggle">
+        <input
+          type="checkbox"
+          checked={upgradeInPlace}
+          onChange={(event) => setUpgradeInPlace(event.target.checked)}
+        />
+        <span>Upgrade my key in place (EIP-7702)</span>
+      </label>
+      {upgradeInPlace ? (
+        <Banner tone="pending">
+          7702 recovery restores access after key loss but cannot fully expel a
+          stolen root key.
+        </Banner>
+      ) : null}
       <Field label="Recovery email">
         <input
           type="email"
@@ -568,12 +646,14 @@ function CreateScreen({
 function UnlockScreen({
   chain,
   rpcUrl,
+  signerOptions,
   onBack,
   onError,
   onUnlocked
 }: {
   chain: KeycatChainConfig;
   rpcUrl?: string;
+  signerOptions: KeycatSignerOptions;
   onBack(): void;
   onError(message: string): void;
   onUnlocked(signer: KeycatSigner, keystore: KeycatKeystoreV1): void;
@@ -610,7 +690,14 @@ function UnlockScreen({
         password,
         webauthnHandle: hasWebAuthn(keystore) ? browserWebAuthnPrf : undefined
       });
-      onUnlocked(createLocalEoaSigner(unlocked, chain, rpcUrl), keystore);
+      const signer = await createSignerForKeystore(
+        unlocked,
+        keystore,
+        chain,
+        signerOptions
+      );
+      const nextKeystore = withSignerMetadata(keystore, signer, chain);
+      onUnlocked(signer, nextKeystore);
       setPassword("");
       setFileText("");
     } catch (error) {
@@ -627,7 +714,15 @@ function UnlockScreen({
       {keystore ? (
         <div className="kc-file-summary">
           <span>{shortAddress(keystore.address)}</span>
-          <span>{hasWebAuthn(keystore) ? "Password + biometric" : "Password"}</span>
+          <span>
+            {keystore.meta.walletMode === "eip7702"
+              ? "7702"
+              : keystore.meta.walletMode === "plain-eoa"
+                ? "EOA"
+                : "Smart"}
+            {" / "}
+            {hasWebAuthn(keystore) ? "Password + biometric" : "Password"}
+          </span>
         </div>
       ) : null}
       <Field label="Password">
@@ -658,6 +753,7 @@ function SettingsScreen({
   keystore,
   chain,
   rpcUrl,
+  signerOptions,
   onDone,
   onError,
   onSigner
@@ -665,6 +761,7 @@ function SettingsScreen({
   keystore?: KeycatKeystoreV1;
   chain: KeycatChainConfig;
   rpcUrl?: string;
+  signerOptions: KeycatSignerOptions;
   onDone(message: string): void;
   onError(message: string): void;
   onSigner(signer: KeycatSigner, keystore: KeycatKeystoreV1): void;
@@ -706,18 +803,29 @@ function SettingsScreen({
           webauthn: nextWebAuthn
         }
       );
-      downloadTextFile(
-        exportKeystoreFile(nextKeystore),
-        `keycat-${nextKeystore.address}.json`
-      );
       const unlocked = await unlockKeystore(nextKeystore, {
         password: nextPassword,
         webauthnHandle: hasWebAuthn(nextKeystore) ? browserWebAuthnPrf : undefined
       });
-      onSigner(createLocalEoaSigner(unlocked, chain, rpcUrl), nextKeystore);
+      const signer = await createSignerForKeystore(
+        unlocked,
+        nextKeystore,
+        chain,
+        signerOptions
+      );
+      const nextKeystoreWithSigner = withSignerMetadata(
+        nextKeystore,
+        signer,
+        chain
+      );
+      downloadTextFile(
+        exportKeystoreFile(nextKeystoreWithSigner),
+        `keycat-${nextKeystoreWithSigner.address}.json`
+      );
       setCurrentPassword("");
       setNextPassword("");
       setConfirm("");
+      onSigner(signer, nextKeystoreWithSigner);
       onDone("New keystore downloaded. The old file is obsolete.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "Could not update settings.");
@@ -816,23 +924,76 @@ function ConfirmRequest({
 }
 
 function UnlockedHome({
-  address,
+  signer,
   chainName,
   onSettings,
-  onLock
+  onLock,
+  onGaslessToggle
 }: {
-  address?: string;
+  signer?: KeycatSignerSnapshot;
   chainName: string;
   onSettings(): void;
   onLock(): void;
+  onGaslessToggle(enabled: boolean): Promise<void>;
 }) {
+  const [gaslessBusy, setGaslessBusy] = useState(false);
+  const gaslessEnabled = signer?.gasless?.enabled ?? false;
+  const gaslessStatus = signer?.gasless?.state ?? "idle";
+
+  async function toggleGasless(next: boolean) {
+    setGaslessBusy(true);
+    try {
+      await onGaslessToggle(next);
+    } finally {
+      setGaslessBusy(false);
+    }
+  }
+
   return (
     <div className="kc-stack">
       <div className="kc-account-block">
-        <span>Account</span>
-        <strong>{address}</strong>
-        <span>{chainName}</span>
+        <div className="kc-address-row">
+          <span
+            title="The account address is the wallet account exposed to dApps."
+          >
+            Account
+          </span>
+          <strong>{signer?.address}</strong>
+        </div>
+        <div className="kc-address-row">
+          <span
+            title="The signer address is the encrypted keystore key that owns the account."
+          >
+            Signer
+          </span>
+          <strong>{signer?.signerAddress}</strong>
+        </div>
+        <div className="kc-address-meta">
+          <span>{chainName}</span>
+          <span>{formatSignerMode(signer)}</span>
+        </div>
       </div>
+      {signer?.mode !== "plain-eoa" ? (
+        <label className="kc-toggle kc-toggle--split">
+          <input
+            type="checkbox"
+            checked={gaslessEnabled}
+            disabled={gaslessBusy}
+            onChange={(event) => void toggleGasless(event.target.checked)}
+          />
+          <span>Gasless mode</span>
+          <small>{gaslessBusy ? "Updating" : gaslessStatus}</small>
+        </label>
+      ) : null}
+      {signer?.gasless?.taskId ? (
+        <div className="kc-file-summary">
+          <span>1Shot task</span>
+          <span>{shortHash(signer.gasless.taskId)}</span>
+        </div>
+      ) : null}
+      {signer?.gasless?.message ? (
+        <Banner tone="pending">{signer.gasless.message}</Banner>
+      ) : null}
       <div className="kc-action-grid">
         <button className="kc-primary" type="button" onClick={onSettings}>
           Settings
@@ -973,6 +1134,53 @@ function hasWebAuthn(keystore: KeycatKeystoreV1): boolean {
   return keystore.crypto.factors.length > 1;
 }
 
+async function createSignerForKeystore(
+  unlocked: Awaited<ReturnType<typeof unlockKeystore>>,
+  keystore: KeycatKeystoreV1,
+  chain: KeycatChainConfig,
+  signerOptions: KeycatSignerOptions
+): Promise<KeycatSigner> {
+  if (keystore.meta.walletMode === "plain-eoa") {
+    return createPlainEoaSigner(unlocked, chain, signerOptions.rpcUrl);
+  }
+  if (keystore.meta.walletMode === "eip7702") {
+    return createUpgraded7702Signer(unlocked, chain, signerOptions);
+  }
+  return createSmartAccountSigner(unlocked, chain, signerOptions);
+}
+
+function withSignerMetadata(
+  keystore: KeycatKeystoreV1,
+  signer: KeycatSigner,
+  chain: KeycatChainConfig
+): KeycatKeystoreV1 {
+  return {
+    ...keystore,
+    meta: {
+      ...keystore.meta,
+      walletMode: signer.mode,
+      accountAddress: signer.address,
+      signerAddress: signer.signerAddress,
+      smartAccountImplementation: signer.implementation,
+      smartAccountChainId: chain.id,
+      smartAccountDeploySalt: signer.mode === "smart-account" ? "0x" : undefined
+    }
+  };
+}
+
+function formatSignerMode(signer?: KeycatSignerSnapshot): string {
+  if (!signer) {
+    return "Locked";
+  }
+  if (signer.mode === "eip7702") {
+    return "EIP-7702 upgraded";
+  }
+  if (signer.mode === "smart-account") {
+    return "Hybrid smart account";
+  }
+  return "Plain EOA";
+}
+
 function getPasswordStrength(password: string): { score: number; label: string } {
   let score = 0;
   if (password.length >= 10) {
@@ -1015,6 +1223,10 @@ function randomBytes(length: number): Uint8Array {
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function shortHash(hash: string): string {
+  return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
 }
 
 const KEYCAT_STYLES = `
@@ -1274,6 +1486,15 @@ const KEYCAT_STYLES = `
 .kc-toggle input {
   accent-color: #1f8a6b;
 }
+.kc-toggle--split {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+}
+.kc-toggle small {
+  color: #68736c;
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
 .kc-dropzone {
   align-items: center;
   border: 1px dashed #9aa79e;
@@ -1307,6 +1528,21 @@ const KEYCAT_STYLES = `
 .kc-file-summary span:last-child {
   color: #68736c;
   font-size: 0.85rem;
+}
+.kc-address-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 86px 1fr;
+}
+.kc-address-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.kc-address-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
 }
 .kc-banner {
   border-radius: 8px;

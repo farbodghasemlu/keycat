@@ -12,6 +12,7 @@ import type {
 } from "../src/signer.js";
 
 const address = "0x0000000000000000000000000000000000000001" as Address;
+const signerAddress = "0x0000000000000000000000000000000000000002" as Address;
 
 function createSigner() {
   const calls: {
@@ -22,6 +23,9 @@ function createSigner() {
   } = { destroyed: false };
   const signer: KeycatSigner = {
     address,
+    signerAddress,
+    mode: "smart-account",
+    implementation: "Hybrid",
     async signPersonalMessage(message) {
       calls.personal = message;
       return "0x1111" as Hex;
@@ -124,6 +128,40 @@ describe("KeycatProviderController", () => {
 
     await expect(controller.request({ method: "eth_sign" })).rejects.toMatchObject({
       code: 4200
+    } satisfies Partial<ProviderRpcError>);
+  });
+
+  it("routes transactions through the account address, not the owner signer", async () => {
+    const { signer, calls } = createSigner();
+    const controller = createKeycatController({ chain: sepolia, signer });
+
+    const hash = controller.request(
+      {
+        method: "eth_sendTransaction",
+        params: [{ from: address, to: address, value: "0x1" }]
+      },
+      { origin: "https://swap.example" }
+    );
+
+    expect(controller.getSnapshot().pending?.kind).toBe("eth_sendTransaction");
+    controller.approvePending();
+
+    await expect(hash).resolves.toBe(
+      "0x3333333333333333333333333333333333333333333333333333333333333333"
+    );
+    expect(calls.transaction).toMatchObject({ to: address, value: 1n });
+
+    const wrongFrom = controller.request(
+      {
+        method: "eth_sendTransaction",
+        params: [{ from: signerAddress, to: address, value: "0x1" }]
+      },
+      { origin: "https://swap.example" }
+    );
+    controller.approvePending();
+
+    await expect(wrongFrom).rejects.toMatchObject({
+      code: 4100
     } satisfies Partial<ProviderRpcError>);
   });
 });
