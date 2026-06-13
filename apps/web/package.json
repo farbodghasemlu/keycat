@@ -1,0 +1,28 @@
+{
+  "name": "@keycat/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:sdk": "mkdir -p public/sdk && cp ../../packages/sdk/dist/widget.js public/sdk/widget.js",
+    "prebuild": "pnpm --filter @keycat/sdk build && pnpm run sync:sdk",
+    "build": "next build",
+    "test": "vitest run --passWithNoTests",
+    "predev": "pnpm --filter @keycat/sdk build && pnpm run sync:sdk",
+    "dev": "next dev"
+  },
+  "dependencies": {
+    "@keycat/sdk": "workspace:*",
+    "@keycat/shared": "workspace:*",
+    "@keycat/wallet-ui": "workspace:*",
+    "next": "^15.5.9",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.6",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "vitest": "^4.0.15"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "keycat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "dev:web": "pnpm --filter @keycat/web dev",
+    "dev:demo": "pnpm --filter @keycat/demo-dapp dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

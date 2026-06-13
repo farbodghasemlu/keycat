@@ -1,0 +1,31 @@
+{
+  "name": "@keycat/wallet-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@keycat/keystore": "workspace:*",
+    "@keycat/shared": "workspace:*",
+    "viem": "^2.40.1"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "react": "^19.2.1",
+    "vitest": "^4.0.15"
+  }
+}
