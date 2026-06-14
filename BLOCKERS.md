@@ -48,3 +48,43 @@ Disabling AI review clears the in-memory session key and parent permission
 context, so Keycat cannot create new payment payloads. Already submitted x402
 payment payloads remain bounded by their per-request amount/payee/redeemer
 caveats and expiry; there is no Keycat server-side storage to revoke.
+
+## ZK Email recovery account-salt privacy
+
+- Date: 2026-06-14
+- Sources:
+  - `https://docs.zk.email/account-recovery/api`
+  - `github.com/zkemail/email-tx-builder/packages/relayer/src/handler.rs`
+  - `github.com/zkemail/email-tx-builder/packages/relayer/src/schema.rs`
+
+The documented ZK Email Account Recovery API exposes `POST /api/getAccountSalt`
+with `email_addr`/`emailAddress` plus `account_code`, and the generic
+email-tx-builder relayer has the same `/api/accountSalt` shape. Calling either
+endpoint from Keycat would send the recovery email address to a third-party API.
+
+That conflicts with Keycat's acceptance requirement that plaintext recovery
+email never leaves the wallet except via the user's own mail client. The wallet
+therefore does not call those account-salt endpoints. The real recovery screen
+stops with a visible blocker unless `DEMO_MOCK_RECOVERY=true`; mock mode uses
+the same controller call sequence with a mocked EmailAuth verifier deployment.
+
+A production real flow needs a ZK Email relayer mode where accountSalt is
+derived from the user's inbound email submission/account code and returned in
+the proof without the Keycat frontend submitting the email address through an
+API.
+
+## KeycatRecoveryController live address
+
+- Date: 2026-06-14
+- Sources:
+  - `contracts/script/DeployKeycatRecoveryController.s.sol`
+  - `packages/shared/src/deployments.ts`
+
+The controller deploy script is pinned to Base Sepolia ZK Email and MetaMask
+Delegation Framework deployments, but this session does not have a
+`DEPLOYER_PRIVATE_KEY` or `BASE_SEPOLIA_RPC_URL` to broadcast with. As a result,
+`packages/shared/src/deployments.ts` contains the external ZK Email/MetaMask
+addresses and a zero placeholder for `keycatRecoveryController`.
+
+After deployment, replace the zero placeholder and set
+`NEXT_PUBLIC_RECOVERY_CONTROLLER_ADDRESS` to the deployed controller address.

@@ -5,6 +5,8 @@ export type KeycatChainName = "sepolia" | "base-sepolia" | "base";
 
 export const DEFAULT_KEYCAT_CHAIN_NAME: KeycatChainName = "sepolia";
 export const DEFAULT_KEYCAT_CHAIN_ID = sepolia.id;
+export const KEYCAT_RECOVERY_CHAIN_NAME: KeycatChainName = "base-sepolia";
+export const KEYCAT_RECOVERY_CHAIN_ID = baseSepolia.id;
 
 export const KEYCAT_CHAINS = {
   sepolia,

@@ -14,6 +14,8 @@ import {
 import {
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
+  encodeFunctionData,
   http,
   toHex,
   zeroAddress,
@@ -50,6 +52,8 @@ import type {
   KeycatChainConfig,
   KeycatGaslessStatus,
   KeycatHex,
+  KeycatRecoveryConfigureOptions,
+  KeycatRecoveryStatus,
   KeycatSigner,
   KeycatSignerMode,
   KeycatSignerSnapshot,
@@ -69,12 +73,54 @@ export type {
 const DEFAULT_DEPLOY_SALT = "0x" as const;
 const DEFAULT_GASLESS_TTL_SECONDS = 15 * 60;
 const DEFAULT_RELAYER_POLL_MS = 2_500;
+const RECOVERY_CONTROLLER_ABI = [
+  {
+    type: "function",
+    name: "configureRecovery",
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "emailGuardianCommitment", type: "bytes32" },
+      { name: "timelockSeconds", type: "uint256" },
+      { name: "permissionContext", type: "bytes" }
+    ],
+    outputs: [],
+    stateMutability: "nonpayable"
+  },
+  {
+    type: "function",
+    name: "cancelRecovery",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [],
+    stateMutability: "nonpayable"
+  }
+] as const;
+
+const DELEGATION_ARRAY_ABI = {
+  type: "tuple[]",
+  components: [
+    { name: "delegate", type: "address" },
+    { name: "delegator", type: "address" },
+    { name: "authority", type: "bytes32" },
+    {
+      name: "caveats",
+      type: "tuple[]",
+      components: [
+        { name: "enforcer", type: "address" },
+        { name: "terms", type: "bytes" },
+        { name: "args", type: "bytes" }
+      ]
+    },
+    { name: "salt", type: "uint256" },
+    { name: "signature", type: "bytes" }
+  ]
+} as const;
 
 export type KeycatSignerOptions = {
   rpcUrl?: string;
   bundlerUrl?: string;
   oneShotRelayerUrl?: string;
   oneShotWebhookUrl?: string;
+  accountAddress?: KeycatAddress;
   gaslessTtlSeconds?: number;
   relayerPollMs?: number;
 };
@@ -158,6 +204,7 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
   abstract readonly implementation: KeycatSmartAccountImplementation;
   private gasless?: KeycatGaslessStatus;
   private aiReview?: KeycatAiReviewStatus;
+  private recovery?: KeycatRecoveryStatus;
   private aiReviewSession?: {
     scope: KeycatAiReviewDelegationScope;
     parentPermissionContext: Delegation[];
@@ -293,6 +340,96 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
     this.emit();
   }
 
+  async configureRecovery({
+    controllerAddress,
+    emailGuardianCommitment,
+    timelockSeconds
+  }: KeycatRecoveryConfigureOptions): Promise<KeycatRecoveryStatus> {
+    if (this.implementation !== "Hybrid") {
+      throw new Error("Recovery is only supported for Hybrid smart accounts.");
+    }
+    this.recovery = {
+      enabled: false,
+      state: "configuring",
+      controllerAddress,
+      emailGuardianCommitment,
+      timelockSeconds,
+      message: "Configuring recovery."
+    };
+    this.emit();
+
+    const delegation = createDelegation({
+      from: this.smartAccount.address as KeycatAddress,
+      to: controllerAddress,
+      environment: this.smartAccount.environment,
+      scope: {
+        type: ScopeType.OwnershipTransfer,
+        contractAddress: this.smartAccount.address as KeycatAddress
+      },
+      salt: randomHex32()
+    });
+    const signature = await this.smartAccount.signDelegation({ delegation });
+    const permissionContext = encodeDelegationPermissionContext({
+      ...delegation,
+      signature
+    });
+    const data = encodeFunctionData({
+      abi: RECOVERY_CONTROLLER_ABI,
+      functionName: "configureRecovery",
+      args: [
+        this.smartAccount.address as KeycatAddress,
+        emailGuardianCommitment,
+        BigInt(timelockSeconds),
+        permissionContext
+      ]
+    });
+
+    await this.sendTransaction({
+      to: controllerAddress,
+      data
+    });
+
+    this.recovery = {
+      enabled: true,
+      state: "enabled",
+      controllerAddress,
+      emailGuardianCommitment,
+      timelockSeconds,
+      message: `Recovery enabled with a ${formatDuration(timelockSeconds)} timelock.`
+    };
+    this.emit();
+    return this.recovery;
+  }
+
+  async cancelRecovery(controllerAddress: KeycatAddress): Promise<KeycatHex> {
+    const data = encodeFunctionData({
+      abi: RECOVERY_CONTROLLER_ABI,
+      functionName: "cancelRecovery",
+      args: [this.smartAccount.address as KeycatAddress]
+    });
+    this.recovery = {
+      ...(this.recovery ?? { enabled: true }),
+      enabled: true,
+      state: "executing",
+      controllerAddress,
+      message: "Cancelling recovery."
+    };
+    this.emit();
+    const hash = await this.sendTransaction({
+      to: controllerAddress,
+      data
+    });
+    this.recovery = {
+      ...(this.recovery ?? { enabled: true }),
+      enabled: true,
+      state: "enabled",
+      controllerAddress,
+      message: "Recovery request cancelled."
+    };
+    this.emit();
+    return hash;
+  }
+
   async reviewWithAi(request: KeycatAiReviewRequest): Promise<KeycatAiReviewResult> {
     const session = this.aiReviewSession;
     if (!session || this.aiReview?.state !== "ready") {
@@ -324,7 +461,8 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
       mode: this.mode,
       implementation: this.implementation,
       ...(this.gasless ? { gasless: { ...this.gasless } } : {}),
-      ...(this.aiReview ? { aiReview: { ...this.aiReview } } : {})
+      ...(this.aiReview ? { aiReview: { ...this.aiReview } } : {}),
+      ...(this.recovery ? { recovery: { ...this.recovery } } : {})
     };
   }
 
@@ -570,13 +708,22 @@ export async function createSmartAccountSigner(
     chain: chain as Chain,
     transport: http(options.rpcUrl)
   });
-  const smartAccount = await toMetaMaskSmartAccount({
-    client: publicClient,
-    implementation: Implementation.Hybrid,
-    deployParams: [owner.address, [], [], []],
-    deploySalt: DEFAULT_DEPLOY_SALT,
-    signer: { account: owner }
-  });
+  const smartAccount = await toMetaMaskSmartAccount(
+    options.accountAddress
+      ? {
+          client: publicClient,
+          implementation: Implementation.Hybrid,
+          address: options.accountAddress,
+          signer: { account: owner }
+        }
+      : {
+          client: publicClient,
+          implementation: Implementation.Hybrid,
+          deployParams: [owner.address, [], [], []],
+          deploySalt: DEFAULT_DEPLOY_SALT,
+          signer: { account: owner }
+        }
+  );
   return new SmartAccountSigner(unlocked, chain, smartAccount, owner, options);
 }
 
@@ -744,6 +891,28 @@ function toOneShotDelegation(delegation: Delegation): OneShotDelegation7710 {
   };
 }
 
+function encodeDelegationPermissionContext(delegation: Delegation): KeycatHex {
+  return encodeAbiParameters(
+    [DELEGATION_ARRAY_ABI],
+    [
+      [
+        {
+          delegate: delegation.delegate as KeycatAddress,
+          delegator: delegation.delegator as KeycatAddress,
+          authority: delegation.authority as KeycatHex,
+          caveats: delegation.caveats.map((caveat) => ({
+            enforcer: caveat.enforcer as KeycatAddress,
+            terms: caveat.terms as KeycatHex,
+            args: caveat.args as KeycatHex
+          })),
+          salt: BigInt(delegation.salt),
+          signature: delegation.signature as KeycatHex
+        }
+      ]
+    ]
+  ) as KeycatHex;
+}
+
 function toOneShotAuthorization(authorization: {
   address: `0x${string}`;
   chainId: number;
@@ -774,4 +943,16 @@ function randomHex32(): KeycatHex {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
   return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds % 86400 === 0) {
+    const days = seconds / 86400;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${seconds} seconds`;
 }

@@ -296,6 +296,21 @@ export class KeycatProviderController implements KeycatProvider {
     this.emitState();
   }
 
+  async cancelRecovery(controllerAddress: KeycatAddress): Promise<KeycatHex> {
+    if (!this.signer) {
+      throw new ProviderRpcError(4100, "Unlock Keycat before cancelling recovery.");
+    }
+    if (!this.signer.cancelRecovery) {
+      throw new ProviderRpcError(
+        4200,
+        "The current Keycat signer does not support recovery cancellation."
+      );
+    }
+    const hash = await this.signer.cancelRecovery(controllerAddress);
+    this.emitState();
+    return hash;
+  }
+
   async request(
     args: KeycatRequestArguments,
     context: KeycatRequestContext = {}

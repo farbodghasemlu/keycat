@@ -41,8 +41,20 @@ import {
   createUpgraded7702Signer,
   type KeycatSignerOptions
 } from "./signer.js";
+import {
+  DEFAULT_RECOVERY_TIMELOCK_SECONDS,
+  createRecoveryCommitment,
+  parseRecoveryControllerAddress,
+  readPendingRecovery,
+  realRecoveryBlockedMessage,
+  submitMockRecoveryRequest,
+  submitRecoveryExecution,
+  type PendingRecovery
+} from "./recovery.js";
 import type {
+  KeycatAddress,
   KeycatChainConfig,
+  KeycatHex,
   KeycatAiReviewDelegationScope,
   KeycatSigner,
   KeycatSignerSnapshot,
@@ -170,6 +182,8 @@ export type KeycatWalletProps = {
   oneShotRelayerUrl?: string;
   oneShotWebhookUrl?: string;
   veniceX402Endpoint?: string;
+  recoveryControllerAddress?: string;
+  demoMockRecovery?: boolean;
   autoLockMs?: number;
   lockOnVisibilityHidden?: boolean;
   transport?: KeycatWalletTransport;
@@ -184,6 +198,8 @@ export function KeycatWallet({
   oneShotRelayerUrl,
   oneShotWebhookUrl,
   veniceX402Endpoint,
+  recoveryControllerAddress,
+  demoMockRecovery = false,
   autoLockMs = 10 * 60 * 1000,
   lockOnVisibilityHidden = true,
   transport
@@ -206,7 +222,8 @@ export function KeycatWallet({
     }),
     [bundlerUrl, oneShotRelayerUrl, oneShotWebhookUrl, rpcUrl]
   );
-  const [screen, setScreen] = useState<"welcome" | "create" | "unlock" | "settings">(
+  const recoveryController = parseRecoveryControllerAddress(recoveryControllerAddress);
+  const [screen, setScreen] = useState<"welcome" | "create" | "unlock" | "recover" | "settings">(
     "welcome"
   );
   const [activeKeystore, setActiveKeystore] = useState<KeycatKeystoreV1>();
@@ -332,6 +349,9 @@ export function KeycatWallet({
 
         {error ? <Banner tone="danger">{error}</Banner> : null}
         {notice ? <Banner tone="success">{notice}</Banner> : null}
+        {demoMockRecovery ? (
+          <Banner tone="danger">MOCK RECOVERY MODE</Banner>
+        ) : null}
         {snapshot.pending && !snapshot.isUnlocked ? (
           <Banner tone="pending">
             {snapshot.pending.origin} is waiting for your wallet.
@@ -378,10 +398,19 @@ export function KeycatWallet({
           <UnlockedHome
             signer={snapshot.signer}
             chainName={chain.name}
+            chain={chain}
+            rpcUrl={rpcUrl}
+            recoveryControllerAddress={recoveryController}
             onSettings={() => setScreen("settings")}
             onLock={() => {
               controller.lock("Wallet locked.");
               setScreen("welcome");
+            }}
+            onRecoveryCancel={async () => {
+              if (!recoveryController) {
+                throw new Error("Recovery controller is not configured.");
+              }
+              await controller.cancelRecovery(recoveryController);
             }}
             onGaslessToggle={async (enabled) => {
               setError(undefined);
@@ -401,15 +430,17 @@ export function KeycatWallet({
             chain={chain}
             rpcUrl={rpcUrl}
             signerOptions={signerOptions}
+            recoveryControllerAddress={recoveryController}
+            demoMockRecovery={demoMockRecovery}
             onBack={() => {
               setError(undefined);
               setScreen("welcome");
             }}
             onError={setError}
-            onCreated={(signer, keystore) => {
+            onCreated={(signer, keystore, recoveryMessage) => {
               controller.setSigner(signer);
               setActiveKeystore(keystore);
-              setNotice(`Created ${signer.address}`);
+              setNotice(`Created ${signer.address}${recoveryMessage ?? ""}`);
               setScreen("welcome");
             }}
           />
@@ -430,6 +461,25 @@ export function KeycatWallet({
               setScreen("welcome");
             }}
           />
+        ) : screen === "recover" ? (
+          <RecoverScreen
+            chain={chain}
+            rpcUrl={rpcUrl}
+            signerOptions={signerOptions}
+            recoveryControllerAddress={recoveryController}
+            demoMockRecovery={demoMockRecovery}
+            onBack={() => {
+              setError(undefined);
+              setScreen("welcome");
+            }}
+            onError={setError}
+            onRecovered={(signer, keystore, message) => {
+              controller.setSigner(signer);
+              setActiveKeystore(keystore);
+              setNotice(message);
+              setScreen("welcome");
+            }}
+          />
         ) : (
           <WelcomeScreen
             onCreate={() => {
@@ -441,6 +491,11 @@ export function KeycatWallet({
               setError(undefined);
               setNotice(undefined);
               setScreen("unlock");
+            }}
+            onRecover={() => {
+              setError(undefined);
+              setNotice(undefined);
+              setScreen("recover");
             }}
           />
         )}
@@ -509,10 +564,12 @@ function Banner({ tone, children }: { tone: "danger" | "success" | "pending"; ch
 
 function WelcomeScreen({
   onCreate,
-  onUnlock
+  onUnlock,
+  onRecover
 }: {
   onCreate(): void;
   onUnlock(): void;
+  onRecover(): void;
 }) {
   return (
     <div className="kc-stack">
@@ -532,6 +589,9 @@ function WelcomeScreen({
         <button className="kc-secondary" type="button" onClick={onUnlock}>
           Open keystore file
         </button>
+        <button className="kc-secondary" type="button" onClick={onRecover}>
+          Recover wallet
+        </button>
       </div>
     </div>
   );
@@ -541,6 +601,8 @@ function CreateScreen({
   chain,
   rpcUrl,
   signerOptions,
+  recoveryControllerAddress,
+  demoMockRecovery,
   onBack,
   onError,
   onCreated
@@ -548,9 +610,15 @@ function CreateScreen({
   chain: KeycatChainConfig;
   rpcUrl?: string;
   signerOptions: KeycatSignerOptions;
+  recoveryControllerAddress?: KeycatAddress;
+  demoMockRecovery: boolean;
   onBack(): void;
   onError(message: string): void;
-  onCreated(signer: KeycatSigner, keystore: KeycatKeystoreV1): void;
+  onCreated(
+    signer: KeycatSigner,
+    keystore: KeycatKeystoreV1,
+    recoveryMessage?: string
+  ): void;
 }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -590,14 +658,40 @@ function CreateScreen({
             relayUpgrade: true
           })
         : await createSmartAccountSigner(unlocked, chain, signerOptions);
+      let recoveryMessage: string | undefined;
+      if (recoveryEmail.trim()) {
+        if (!demoMockRecovery) {
+          throw new Error(realRecoveryBlockedMessage());
+        }
+        if (upgradeInPlace) {
+          throw new Error("Recovery setup requires a Hybrid smart account.");
+        }
+        if (!recoveryControllerAddress) {
+          throw new Error("NEXT_PUBLIC_RECOVERY_CONTROLLER_ADDRESS is required for recovery setup.");
+        }
+        if (!signer.configureRecovery) {
+          throw new Error("This signer cannot configure recovery.");
+        }
+        const commitment = await createRecoveryCommitment({
+          account: signer.address,
+          email: recoveryEmail
+        });
+        await signer.configureRecovery({
+          controllerAddress: recoveryControllerAddress,
+          emailGuardianCommitment: commitment.accountSalt,
+          timelockSeconds: DEFAULT_RECOVERY_TIMELOCK_SECONDS
+        });
+        recoveryMessage = ` Recovery enabled with a ${formatDuration(DEFAULT_RECOVERY_TIMELOCK_SECONDS)} timelock.`;
+      }
       const nextKeystore = withSignerMetadata(keystore, signer, chain);
       downloadTextFile(
         exportKeystoreFile(nextKeystore),
         `keycat-${nextKeystore.address}.json`
       );
-      onCreated(signer, nextKeystore);
+      onCreated(signer, nextKeystore, recoveryMessage);
       setPassword("");
       setConfirm("");
+      setRecoveryEmail("");
     } catch (error) {
       onError(error instanceof Error ? error.message : "Could not create wallet.");
     } finally {
@@ -771,6 +865,206 @@ function UnlockScreen({
         <button className="kc-primary" type="submit" disabled={busy}>
           {busy ? "Unlocking..." : "Unlock"}
         </button>
+        <button className="kc-secondary" type="button" onClick={onBack} disabled={busy}>
+          Back
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function RecoverScreen({
+  chain,
+  rpcUrl,
+  signerOptions,
+  recoveryControllerAddress,
+  demoMockRecovery,
+  onBack,
+  onError,
+  onRecovered
+}: {
+  chain: KeycatChainConfig;
+  rpcUrl?: string;
+  signerOptions: KeycatSignerOptions;
+  recoveryControllerAddress?: KeycatAddress;
+  demoMockRecovery: boolean;
+  onBack(): void;
+  onError(message: string): void;
+  onRecovered(
+    signer: KeycatSigner,
+    keystore: KeycatKeystoreV1,
+    message: string
+  ): void;
+}) {
+  const [account, setAccount] = useState("");
+  const [accountSalt, setAccountSalt] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<PendingRecovery>();
+  const [recoveredSigner, setRecoveredSigner] = useState<KeycatSigner>();
+  const [recoveredKeystore, setRecoveredKeystore] = useState<KeycatKeystoreV1>();
+
+  async function requestRecovery(event: FormEvent) {
+    event.preventDefault();
+    onError("");
+    if (!recoveryControllerAddress) {
+      onError("NEXT_PUBLIC_RECOVERY_CONTROLLER_ADDRESS is required for recovery.");
+      return;
+    }
+    if (!demoMockRecovery) {
+      onError(realRecoveryBlockedMessage());
+      return;
+    }
+    if (!isRecoveryAddress(account)) {
+      onError("Enter the smart account address to recover.");
+      return;
+    }
+    if (!isRecoveryBytes32(accountSalt)) {
+      onError("Enter the salted recovery commitment as bytes32.");
+      return;
+    }
+    if (password.length < 10) {
+      onError("Use at least 10 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      onError("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const keystore = await createKeystore({
+        password,
+        label: "Keycat"
+      });
+      const unlocked = await unlockKeystore(keystore, { password });
+      const signer = await createSmartAccountSigner(unlocked, chain, {
+        ...signerOptions,
+        accountAddress: account as KeycatAddress
+      });
+      const nextKeystore = withSignerMetadata(keystore, signer, chain);
+      downloadTextFile(
+        exportKeystoreFile(nextKeystore),
+        `keycat-${nextKeystore.address}.json`
+      );
+      await submitMockRecoveryRequest({
+        chain,
+        rpcUrl,
+        oneShotRelayerUrl: signerOptions.oneShotRelayerUrl,
+        controllerAddress: recoveryControllerAddress,
+        account: account as KeycatAddress,
+        newOwner: signer.signerAddress,
+        accountSalt: accountSalt as KeycatHex
+      });
+      const nextPending = await readPendingRecovery({
+        chain,
+        rpcUrl,
+        controllerAddress: recoveryControllerAddress,
+        account: account as KeycatAddress
+      });
+      setPending(nextPending);
+      setRecoveredSigner(signer);
+      setRecoveredKeystore(nextKeystore);
+      setPassword("");
+      setConfirm("");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Could not request recovery.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeRecovery() {
+    if (!recoveryControllerAddress || !recoveredSigner || !recoveredKeystore) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await submitRecoveryExecution({
+        chain,
+        rpcUrl,
+        oneShotRelayerUrl: signerOptions.oneShotRelayerUrl,
+        controllerAddress: recoveryControllerAddress,
+        account: account as KeycatAddress
+      });
+      onRecovered(
+        recoveredSigner,
+        recoveredKeystore,
+        `Recovered ${account}. Unlocking now uses the new keystore.`
+      );
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Could not execute recovery.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const canExecute = Boolean(pending?.exists && pending.executeAfter <= now);
+
+  return (
+    <form className="kc-stack" onSubmit={requestRecovery}>
+      <h2>Recover wallet</h2>
+      <Field label="Account address">
+        <input
+          autoComplete="off"
+          placeholder="0x..."
+          value={account}
+          onChange={(event) => setAccount(event.target.value)}
+          required
+        />
+      </Field>
+      <Field label="Salted recovery commitment">
+        <input
+          autoComplete="off"
+          placeholder="0x..."
+          value={accountSalt}
+          onChange={(event) => setAccountSalt(event.target.value)}
+          required
+        />
+      </Field>
+      <Field label="New keystore password">
+        <input
+          autoComplete="new-password"
+          minLength={10}
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          required={!pending}
+        />
+      </Field>
+      <Field label="Confirm new password">
+        <input
+          autoComplete="new-password"
+          type="password"
+          value={confirm}
+          onChange={(event) => setConfirm(event.target.value)}
+          required={!pending}
+        />
+      </Field>
+      {pending?.exists ? (
+        <div className="kc-file-summary">
+          <span>Execute after</span>
+          <span>{formatUnixTime(pending.executeAfter)}</span>
+        </div>
+      ) : null}
+      <div className="kc-action-grid">
+        {pending?.exists ? (
+          <button
+            className="kc-primary"
+            type="button"
+            onClick={() => void executeRecovery()}
+            disabled={busy || !canExecute}
+          >
+            {busy ? "Executing..." : canExecute ? "Execute recovery" : "Waiting"}
+          </button>
+        ) : (
+          <button className="kc-primary" type="submit" disabled={busy}>
+            {busy ? "Requesting..." : "Create new key"}
+          </button>
+        )}
         <button className="kc-secondary" type="button" onClick={onBack} disabled={busy}>
           Back
         </button>
@@ -1109,19 +1403,60 @@ function AiReviewToggleControl({
 function UnlockedHome({
   signer,
   chainName,
+  chain,
+  rpcUrl,
+  recoveryControllerAddress,
   onSettings,
   onLock,
+  onRecoveryCancel,
   onGaslessToggle
 }: {
   signer?: KeycatSignerSnapshot;
   chainName: string;
+  chain: KeycatChainConfig;
+  rpcUrl?: string;
+  recoveryControllerAddress?: KeycatAddress;
   onSettings(): void;
   onLock(): void;
+  onRecoveryCancel(): Promise<void>;
   onGaslessToggle(enabled: boolean): Promise<void>;
 }) {
   const [gaslessBusy, setGaslessBusy] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [pendingRecovery, setPendingRecovery] = useState<PendingRecovery>();
   const gaslessEnabled = signer?.gasless?.enabled ?? false;
   const gaslessStatus = signer?.gasless?.state ?? "idle";
+
+  useEffect(() => {
+    if (!signer?.address || !recoveryControllerAddress) {
+      setPendingRecovery(undefined);
+      return undefined;
+    }
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const next = await readPendingRecovery({
+          chain,
+          rpcUrl,
+          controllerAddress: recoveryControllerAddress,
+          account: signer.address
+        });
+        if (!stopped) {
+          setPendingRecovery(next.exists ? next : undefined);
+        }
+      } catch {
+        if (!stopped) {
+          setPendingRecovery(undefined);
+        }
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 15_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [chain, recoveryControllerAddress, rpcUrl, signer?.address]);
 
   async function toggleGasless(next: boolean) {
     setGaslessBusy(true);
@@ -1132,8 +1467,35 @@ function UnlockedHome({
     }
   }
 
+  async function cancelRecovery() {
+    setRecoveryBusy(true);
+    try {
+      await onRecoveryCancel();
+      setPendingRecovery(undefined);
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
   return (
     <div className="kc-stack">
+      {pendingRecovery ? (
+        <div className="kc-recovery-alert">
+          <strong>Recovery requested</strong>
+          <span>
+            New owner {shortAddress(pendingRecovery.newOwner)} after{" "}
+            {formatUnixTime(pendingRecovery.executeAfter)}
+          </span>
+          <button
+            className="kc-secondary"
+            type="button"
+            onClick={() => void cancelRecovery()}
+            disabled={recoveryBusy}
+          >
+            {recoveryBusy ? "Cancelling..." : "Cancel recovery"}
+          </button>
+        </div>
+      ) : null}
       <div className="kc-account-block">
         <div className="kc-address-row">
           <span
@@ -1329,7 +1691,10 @@ async function createSignerForKeystore(
   if (keystore.meta.walletMode === "eip7702") {
     return createUpgraded7702Signer(unlocked, chain, signerOptions);
   }
-  return createSmartAccountSigner(unlocked, chain, signerOptions);
+  return createSmartAccountSigner(unlocked, chain, {
+    ...signerOptions,
+    accountAddress: keystore.meta.accountAddress as KeycatAddress | undefined
+  });
 }
 
 function withSignerMetadata(
@@ -1408,12 +1773,32 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function isRecoveryAddress(value: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/u.test(value);
+}
+
+function isRecoveryBytes32(value: string): boolean {
+  return /^0x[a-fA-F0-9]{64}$/u.test(value);
+}
+
 function shortHash(hash: string): string {
   return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
 }
 
 function formatUnixTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString();
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds % 86400 === 0) {
+    const days = seconds / 86400;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${seconds} seconds`;
 }
 
 const KEYCAT_STYLES = `
@@ -1706,6 +2091,19 @@ const KEYCAT_STYLES = `
   display: grid;
   gap: 5px;
   padding: 12px;
+  overflow-wrap: anywhere;
+}
+.kc-recovery-alert {
+  background: #fff0ed;
+  border: 1px solid #d76c5d;
+  border-radius: 8px;
+  color: #6f1d13;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+.kc-recovery-alert span {
+  font-size: 0.88rem;
   overflow-wrap: anywhere;
 }
 .kc-file-summary {

@@ -89,6 +89,23 @@ export type KeycatAiReviewStatus = {
   message?: string;
 };
 
+export type KeycatRecoveryStatus = {
+  enabled: boolean;
+  state: "disabled" | "configuring" | "enabled" | "pending" | "executing" | "error";
+  controllerAddress?: KeycatAddress;
+  emailGuardianCommitment?: KeycatHex;
+  timelockSeconds?: number;
+  executeAfter?: number;
+  newOwner?: KeycatAddress;
+  message?: string;
+};
+
+export type KeycatRecoveryConfigureOptions = {
+  controllerAddress: KeycatAddress;
+  emailGuardianCommitment: KeycatHex;
+  timelockSeconds: number;
+};
+
 export type KeycatAiReviewRequest =
   | {
       kind: "transaction";
@@ -118,6 +135,7 @@ export type KeycatSignerSnapshot = {
   implementation?: KeycatSmartAccountImplementation;
   gasless?: KeycatGaslessStatus;
   aiReview?: KeycatAiReviewStatus;
+  recovery?: KeycatRecoveryStatus;
 };
 
 export type KeycatSigner = {
@@ -130,6 +148,8 @@ export type KeycatSigner = {
   sendTransaction(transaction: KeycatTransactionRequest): Promise<KeycatHex>;
   setGaslessMode?(enabled: boolean): Promise<void>;
   setAiReviewMode?(enabled: boolean, options?: KeycatAiReviewOptions): Promise<void>;
+  configureRecovery?(options: KeycatRecoveryConfigureOptions): Promise<KeycatRecoveryStatus>;
+  cancelRecovery?(controllerAddress: KeycatAddress): Promise<KeycatHex>;
   reviewWithAi?(request: KeycatAiReviewRequest): Promise<KeycatAiReviewResult>;
   getSnapshot?(): KeycatSignerSnapshot;
   subscribe?(listener: () => void): () => void;
