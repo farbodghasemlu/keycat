@@ -9,3 +9,5 @@ broadcast/
 out/
 *.log
 AGENTS.md
+BLOCKERS.md
+INTEGRATION_SURFACE.md
