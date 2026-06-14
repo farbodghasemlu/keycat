@@ -41,6 +41,7 @@ export default function WidgetPage() {
       bundlerUrl={process.env.NEXT_PUBLIC_BUNDLER_URL}
       oneShotRelayerUrl={process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL}
       oneShotWebhookUrl={process.env.NEXT_PUBLIC_ONESHOT_WEBHOOK_URL}
+      veniceX402Endpoint={process.env.NEXT_PUBLIC_VENICE_X402_ENDPOINT}
       transport={transport}
     />
   );

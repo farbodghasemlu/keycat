@@ -43,6 +43,7 @@ import {
 } from "./signer.js";
 import type {
   KeycatChainConfig,
+  KeycatAiReviewDelegationScope,
   KeycatSigner,
   KeycatSignerSnapshot,
   KeycatTransactionRequest,
@@ -58,6 +59,7 @@ export type {
   KeycatRequestArguments,
   KeycatRequestContext,
   KeycatChainConfig,
+  KeycatAiReviewDelegationScope,
   KeycatSigner,
   KeycatSignerSnapshot,
   KeycatTransactionRequest,
@@ -108,6 +110,7 @@ export type UseKeycatProviderOptions = {
   rpcUrl?: string;
   publicRpc?: PublicRpcProxy;
   signer?: KeycatSigner;
+  aiReviewEndpoint?: string;
 };
 
 export type UseKeycatProviderResult = {
@@ -121,13 +124,14 @@ export function useKeycatProvider({
   chainId,
   rpcUrl,
   publicRpc,
-  signer
+  signer,
+  aiReviewEndpoint
 }: UseKeycatProviderOptions = {}): UseKeycatProviderResult {
   const chain = useMemo(
     () => chainOption ?? getKeycatChain(chainId),
     [chainId, chainOption]
   );
-  const key = `${chain.id}:${rpcUrl ?? ""}`;
+  const key = `${chain.id}:${rpcUrl ?? ""}:${aiReviewEndpoint ?? ""}`;
   const controllerRef = useRef<{
     key: string;
     controller: KeycatProviderController;
@@ -137,7 +141,13 @@ export function useKeycatProvider({
     controllerRef.current?.controller.lock("Network changed.");
     controllerRef.current = {
       key,
-      controller: createKeycatController({ chain, rpcUrl, publicRpc, signer })
+      controller: createKeycatController({
+        chain,
+        rpcUrl,
+        publicRpc,
+        signer,
+        aiReviewEndpoint
+      })
     };
   }
 
@@ -159,6 +169,7 @@ export type KeycatWalletProps = {
   bundlerUrl?: string;
   oneShotRelayerUrl?: string;
   oneShotWebhookUrl?: string;
+  veniceX402Endpoint?: string;
   autoLockMs?: number;
   lockOnVisibilityHidden?: boolean;
   transport?: KeycatWalletTransport;
@@ -172,6 +183,7 @@ export function KeycatWallet({
   bundlerUrl,
   oneShotRelayerUrl,
   oneShotWebhookUrl,
+  veniceX402Endpoint,
   autoLockMs = 10 * 60 * 1000,
   lockOnVisibilityHidden = true,
   transport
@@ -180,7 +192,11 @@ export function KeycatWallet({
     () => chainOption ?? getKeycatChain(chainId),
     [chainId, chainOption]
   );
-  const { controller, snapshot } = useKeycatProvider({ chain, rpcUrl });
+  const { controller, snapshot } = useKeycatProvider({
+    chain,
+    rpcUrl,
+    aiReviewEndpoint: veniceX402Endpoint
+  });
   const signerOptions = useMemo(
     () => ({
       rpcUrl,
@@ -333,7 +349,21 @@ export function KeycatWallet({
             keystore={activeKeystore}
             chain={chain}
             rpcUrl={rpcUrl}
+            signer={snapshot.signer}
             signerOptions={signerOptions}
+            onAiReviewScope={() => controller.prepareAiReviewScope()}
+            onAiReviewToggle={async (enabled, scope) => {
+              setError(undefined);
+              try {
+                await controller.setAiReviewMode(enabled, scope);
+              } catch (toggleError) {
+                setError(
+                  toggleError instanceof Error
+                    ? toggleError.message
+                    : "Could not change AI transaction review."
+                );
+              }
+            }}
             onDone={(message) => {
               setNotice(message);
               setScreen("welcome");
@@ -753,7 +783,10 @@ function SettingsScreen({
   keystore,
   chain,
   rpcUrl,
+  signer,
   signerOptions,
+  onAiReviewScope,
+  onAiReviewToggle,
   onDone,
   onError,
   onSigner
@@ -761,7 +794,13 @@ function SettingsScreen({
   keystore?: KeycatKeystoreV1;
   chain: KeycatChainConfig;
   rpcUrl?: string;
+  signer?: KeycatSignerSnapshot;
   signerOptions: KeycatSignerOptions;
+  onAiReviewScope(): Promise<KeycatAiReviewDelegationScope>;
+  onAiReviewToggle(
+    enabled: boolean,
+    scope?: KeycatAiReviewDelegationScope
+  ): Promise<void>;
   onDone(message: string): void;
   onError(message: string): void;
   onSigner(signer: KeycatSigner, keystore: KeycatKeystoreV1): void;
@@ -837,6 +876,18 @@ function SettingsScreen({
   return (
     <form className="kc-stack" onSubmit={submit}>
       <h2>Settings</h2>
+      {signer?.mode !== "plain-eoa" ? (
+        <>
+          <AiReviewToggleControl
+            signer={signer}
+            onAiReviewScope={onAiReviewScope}
+            onAiReviewToggle={onAiReviewToggle}
+          />
+          {signer?.aiReview?.message ? (
+            <Banner tone="pending">{signer.aiReview.message}</Banner>
+          ) : null}
+        </>
+      ) : null}
       <Banner tone="pending">Changing secrets downloads a new keystore. The old file becomes obsolete.</Banner>
       <Field label="Current password">
         <input
@@ -911,6 +962,9 @@ function ConfirmRequest({
           <code>{pending.detail.raw.value}</code>
         </details>
       ) : null}
+      {pending.detail.aiReview ? (
+        <AiReviewPanel review={pending.detail.aiReview} />
+      ) : null}
       <div className="kc-action-grid">
         <button className="kc-primary" type="button" onClick={onApprove} disabled={executing}>
           {executing ? "Confirming..." : "Approve"}
@@ -920,6 +974,135 @@ function ConfirmRequest({
         </button>
       </div>
     </div>
+  );
+}
+
+function AiReviewPanel({
+  review
+}: {
+  review: NonNullable<KeycatPendingRequest["detail"]["aiReview"]>;
+}) {
+  return (
+    <div className={`kc-ai-review kc-ai-review--${review.severity}`}>
+      <div className="kc-ai-review-head">
+        <strong>AI review</strong>
+        <span>{review.status}</span>
+      </div>
+      <p>{review.summary}</p>
+      {review.risks.length > 0 ? (
+        <div className="kc-risk-list">
+          {review.risks.map((risk) => (
+            <span className={`kc-risk kc-risk--${risk.severity}`} key={`${risk.source}:${risk.label}`}>
+              {risk.label}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="kc-muted">No specific risks flagged.</div>
+      )}
+      {review.pricePaid ? (
+        <div className="kc-paid">{review.pricePaid}</div>
+      ) : null}
+      {review.notice ? (
+        <div className="kc-muted">{review.notice}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function AiReviewToggleControl({
+  signer,
+  onAiReviewScope,
+  onAiReviewToggle
+}: {
+  signer?: KeycatSignerSnapshot;
+  onAiReviewScope(): Promise<KeycatAiReviewDelegationScope>;
+  onAiReviewToggle(
+    enabled: boolean,
+    scope?: KeycatAiReviewDelegationScope
+  ): Promise<void>;
+}) {
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiScope, setAiScope] = useState<KeycatAiReviewDelegationScope>();
+  const aiEnabled = signer?.aiReview?.enabled ?? false;
+  const aiStatus = signer?.aiReview?.state ?? "disabled";
+
+  async function requestAiToggle(next: boolean) {
+    setAiBusy(true);
+    try {
+      if (!next) {
+        setAiScope(undefined);
+        await onAiReviewToggle(false);
+        return;
+      }
+      const scope = await onAiReviewScope();
+      setAiScope(scope);
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  async function approveAiScope() {
+    if (!aiScope) {
+      return;
+    }
+    setAiBusy(true);
+    try {
+      await onAiReviewToggle(true, aiScope);
+      setAiScope(undefined);
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <label className="kc-toggle kc-toggle--split">
+        <input
+          type="checkbox"
+          checked={aiEnabled}
+          disabled={aiBusy}
+          onChange={(event) => void requestAiToggle(event.target.checked)}
+        />
+        <span>AI transaction review (paid per use from your wallet)</span>
+        <small>{aiBusy ? "Updating" : aiStatus}</small>
+      </label>
+      {aiScope ? (
+        <div className="kc-scope-preview">
+          <strong>AI review delegation scope</strong>
+          <div className="kc-detail-table">
+            <div className="kc-detail-row">
+              <span>Daily cap</span>
+              <strong>$0.25 stablecoin payments</strong>
+            </div>
+            <div className="kc-detail-row">
+              <span>Payee</span>
+              <strong>{aiScope.payeeAddress}</strong>
+            </div>
+            <div className="kc-detail-row">
+              <span>Stablecoin</span>
+              <strong>{aiScope.stablecoinAddress}</strong>
+            </div>
+            <div className="kc-detail-row">
+              <span>Chain</span>
+              <strong>{aiScope.network}</strong>
+            </div>
+            <div className="kc-detail-row">
+              <span>Expiry</span>
+              <strong>{formatUnixTime(aiScope.expiresAt)}</strong>
+            </div>
+          </div>
+          <div className="kc-action-grid">
+            <button className="kc-primary" type="button" onClick={() => void approveAiScope()} disabled={aiBusy}>
+              {aiBusy ? "Enabling..." : "Approve scope"}
+            </button>
+            <button className="kc-secondary" type="button" onClick={() => setAiScope(undefined)} disabled={aiBusy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1227,6 +1410,10 @@ function shortAddress(address: string): string {
 
 function shortHash(hash: string): string {
   return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
+}
+
+function formatUnixTime(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleString();
 }
 
 const KEYCAT_STYLES = `
@@ -1628,6 +1815,53 @@ const KEYCAT_STYLES = `
   padding: 10px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.kc-ai-review,
+.kc-scope-preview {
+  border: 1px solid #dbe3dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.kc-ai-review--medium {
+  border-color: #e4c375;
+}
+.kc-ai-review--high {
+  border-color: #e5aaa0;
+}
+.kc-ai-review-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+.kc-ai-review-head span,
+.kc-paid {
+  color: #68736c;
+  font-size: 0.82rem;
+}
+.kc-risk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.kc-risk {
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 750;
+  padding: 4px 8px;
+}
+.kc-risk--low {
+  background: #edf8f2;
+  color: #15573f;
+}
+.kc-risk--medium {
+  background: #fff8e8;
+  color: #5c4717;
+}
+.kc-risk--high {
+  background: #fff0ed;
+  color: #8a2618;
 }
 @media (max-width: 520px) {
   .kc-wallet--fullpage,

@@ -47,12 +47,77 @@ export type KeycatGaslessStatus = {
   expiresAt?: number;
 };
 
+export type KeycatAiReviewSeverity = "low" | "medium" | "high";
+
+export type KeycatAiReviewRisk = {
+  label: string;
+  severity: KeycatAiReviewSeverity;
+  source: "local" | "venice";
+};
+
+export type KeycatAiReviewResult = {
+  status: "local" | "loading" | "ready" | "unavailable";
+  summary: string;
+  risks: KeycatAiReviewRisk[];
+  severity: KeycatAiReviewSeverity;
+  pricePaid?: string;
+  notice?: string;
+};
+
+export type KeycatAiReviewDelegationScope = {
+  endpoint: string;
+  chainId: number;
+  network: `eip155:${number}`;
+  stablecoinAddress: KeycatAddress;
+  payeeAddress: KeycatAddress;
+  dailyUsdLimit: "0.25";
+  dailyLimitAtomic: string;
+  periodSeconds: 86400;
+  expiresAt: number;
+};
+
+export type KeycatAiReviewStatus = {
+  enabled: boolean;
+  state: "disabled" | "probing" | "ready";
+  dailyUsdLimit?: "0.25";
+  payeeAddress?: KeycatAddress;
+  stablecoinAddress?: KeycatAddress;
+  payerAddress?: KeycatAddress;
+  sessionKeyAddress?: KeycatAddress;
+  chainId?: number;
+  expiresAt?: number;
+  message?: string;
+};
+
+export type KeycatAiReviewRequest =
+  | {
+      kind: "transaction";
+      origin: string;
+      chainId: number;
+      transaction: KeycatTransactionRequest;
+      local: KeycatAiReviewResult;
+    }
+  | {
+      kind: "typed-data";
+      origin: string;
+      chainId: number;
+      typedData: KeycatTypedDataPayload;
+      local: KeycatAiReviewResult;
+    };
+
+export type KeycatAiReviewOptions = {
+  endpoint?: string;
+  fetch?: typeof fetch;
+  scope?: KeycatAiReviewDelegationScope;
+};
+
 export type KeycatSignerSnapshot = {
   address: KeycatAddress;
   signerAddress: KeycatAddress;
   mode: KeycatSignerMode;
   implementation?: KeycatSmartAccountImplementation;
   gasless?: KeycatGaslessStatus;
+  aiReview?: KeycatAiReviewStatus;
 };
 
 export type KeycatSigner = {
@@ -64,6 +129,8 @@ export type KeycatSigner = {
   signTypedData(payload: KeycatTypedDataPayload): Promise<KeycatHex>;
   sendTransaction(transaction: KeycatTransactionRequest): Promise<KeycatHex>;
   setGaslessMode?(enabled: boolean): Promise<void>;
+  setAiReviewMode?(enabled: boolean, options?: KeycatAiReviewOptions): Promise<void>;
+  reviewWithAi?(request: KeycatAiReviewRequest): Promise<KeycatAiReviewResult>;
   getSnapshot?(): KeycatSignerSnapshot;
   subscribe?(listener: () => void): () => void;
   destroy(): void;

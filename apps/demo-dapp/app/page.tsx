@@ -33,6 +33,7 @@ const USDC_SEPOLIA = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
 const KITTY_ROUTER = "0x0000000000000000000000000000000000c0ffee";
 const SELF_SEND_VALUE = "0x5af3107a4000";
 const WEI_PER_ETH = BigInt("1000000000000000000");
+const MAX_UINT256 = (1n << 256n) - 1n;
 
 export default function Page() {
   const [provider, setProvider] = useState<Eip1193Provider | null>(null);
@@ -188,7 +189,7 @@ export default function Page() {
           {
             from: address,
             to: USDC_SEPOLIA,
-            data: encodeApprove(KITTY_ROUTER, BigInt("25000000")),
+            data: encodeApprove(KITTY_ROUTER, MAX_UINT256),
             value: "0x0"
           }
         ]
@@ -241,7 +242,7 @@ export default function Page() {
               <TokenMark label="USDC" tone="coral" />
               <div>
                 <span>Approve</span>
-                <strong>25 USDC</strong>
+                <strong>Unlimited USDC</strong>
               </div>
             </div>
             <div className="ks-button-grid">

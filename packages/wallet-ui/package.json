@@ -19,6 +19,9 @@
     "@keycat/keystore": "workspace:*",
     "@keycat/shared": "workspace:*",
     "@metamask/smart-accounts-kit": "^1.6.0",
+    "@metamask/x402": "^0.2.0",
+    "@x402/core": "^2.15.0",
+    "@x402/fetch": "^2.15.0",
     "viem": "^2.40.1"
   },
   "peerDependencies": {

@@ -21,6 +21,7 @@ export default function AppPage() {
       bundlerUrl={process.env.NEXT_PUBLIC_BUNDLER_URL}
       oneShotRelayerUrl={process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL}
       oneShotWebhookUrl={process.env.NEXT_PUBLIC_ONESHOT_WEBHOOK_URL}
+      veniceX402Endpoint={process.env.NEXT_PUBLIC_VENICE_X402_ENDPOINT}
     />
   );
 }
@@ -31,6 +32,9 @@ function getChainId(value?: string): number | undefined {
   }
   if (value === "base-sepolia") {
     return 84532;
+  }
+  if (value === "base") {
+    return 8453;
   }
   const numeric = Number(value);
   return Number.isInteger(numeric) ? numeric : undefined;

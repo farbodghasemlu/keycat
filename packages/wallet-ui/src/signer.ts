@@ -1,4 +1,5 @@
 import type { UnlockedKeystore } from "@keycat/keystore";
+import { getKeycatChain } from "@keycat/shared";
 import {
   CaveatType,
   Implementation,
@@ -25,6 +26,12 @@ import {
   type PrivateKeyAccount
 } from "viem/accounts";
 import {
+  createSignedAiReviewDelegation,
+  probeAiReviewScope,
+  requestVeniceAiReview,
+  resolveAiReviewWithTimeout
+} from "./ai-review.js";
+import {
   isOneShotTerminalStatus,
   oneShotStatusState,
   OneShotRelayerClient,
@@ -35,6 +42,11 @@ import {
 } from "./oneshot.js";
 import type {
   KeycatAddress,
+  KeycatAiReviewDelegationScope,
+  KeycatAiReviewOptions,
+  KeycatAiReviewRequest,
+  KeycatAiReviewResult,
+  KeycatAiReviewStatus,
   KeycatChainConfig,
   KeycatGaslessStatus,
   KeycatHex,
@@ -145,6 +157,13 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
   abstract readonly mode: KeycatSignerMode;
   abstract readonly implementation: KeycatSmartAccountImplementation;
   private gasless?: KeycatGaslessStatus;
+  private aiReview?: KeycatAiReviewStatus;
+  private aiReviewSession?: {
+    scope: KeycatAiReviewDelegationScope;
+    parentPermissionContext: Delegation[];
+    sessionKey: PrivateKeyAccount;
+    fetch?: typeof fetch;
+  };
   private sessionKey?: PrivateKeyAccount;
   private destroyed = false;
   private pollTimer?: ReturnType<typeof setTimeout>;
@@ -215,13 +234,97 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
     this.emit();
   }
 
+  async setAiReviewMode(
+    enabled: boolean,
+    options: KeycatAiReviewOptions = {}
+  ): Promise<void> {
+    if (!enabled) {
+      this.aiReviewSession = undefined;
+      this.aiReview = {
+        enabled: false,
+        state: "disabled",
+        message: "AI transaction review is disabled."
+      };
+      this.emit();
+      return;
+    }
+
+    this.aiReview = {
+      enabled: true,
+      state: "probing",
+      message: "Checking the x402 payment scope."
+    };
+    this.emit();
+
+    const scope =
+      options.scope ??
+      (await probeAiReviewScope({
+        endpoint: options.endpoint,
+        fetch: options.fetch
+      }));
+    const paymentAccountAddress = await this.getSmartAccountAddressForChain(
+      scope.chainId
+    );
+    const sessionKey = privateKeyToAccount(generatePrivateKey());
+    const parentDelegation = await createSignedAiReviewDelegation({
+      privateKey: this.unlocked.privateKey,
+      payerAddress: paymentAccountAddress,
+      sessionKeyAddress: sessionKey.address as KeycatAddress,
+      scope
+    });
+
+    this.aiReviewSession = {
+      scope,
+      parentPermissionContext: [parentDelegation],
+      sessionKey,
+      fetch: options.fetch
+    };
+    this.aiReview = {
+      enabled: true,
+      state: "ready",
+      dailyUsdLimit: scope.dailyUsdLimit,
+      payeeAddress: scope.payeeAddress,
+      stablecoinAddress: scope.stablecoinAddress,
+      payerAddress: paymentAccountAddress,
+      sessionKeyAddress: sessionKey.address as KeycatAddress,
+      chainId: scope.chainId,
+      expiresAt: scope.expiresAt
+    };
+    this.emit();
+  }
+
+  async reviewWithAi(request: KeycatAiReviewRequest): Promise<KeycatAiReviewResult> {
+    const session = this.aiReviewSession;
+    if (!session || this.aiReview?.state !== "ready") {
+      return request.local;
+    }
+    const abort = new AbortController();
+    const review = requestVeniceAiReview({
+      request,
+      scope: session.scope,
+      parentPermissionContext: session.parentPermissionContext,
+      sessionAccount: session.sessionKey,
+      fetch: session.fetch,
+      signal: abort.signal
+    });
+    const result = await resolveAiReviewWithTimeout({
+      local: request.local,
+      review
+    });
+    if (result.status === "unavailable") {
+      abort.abort();
+    }
+    return result;
+  }
+
   getSnapshot(): KeycatSignerSnapshot {
     return {
       address: this.address,
       signerAddress: this.signerAddress,
       mode: this.mode,
       implementation: this.implementation,
-      ...(this.gasless ? { gasless: { ...this.gasless } } : {})
+      ...(this.gasless ? { gasless: { ...this.gasless } } : {}),
+      ...(this.aiReview ? { aiReview: { ...this.aiReview } } : {})
     };
   }
 
@@ -237,6 +340,7 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
     }
     this.listeners.clear();
     this.sessionKey = undefined;
+    this.aiReviewSession = undefined;
     this.unlocked.zeroize();
   }
 
@@ -256,6 +360,36 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
 
   private createRelayerClient(): OneShotRelayerClient {
     return new OneShotRelayerClient(this.options.oneShotRelayerUrl ?? "");
+  }
+
+  private async getSmartAccountAddressForChain(
+    chainId: number
+  ): Promise<KeycatAddress> {
+    if (chainId === this.chain.id) {
+      return this.address;
+    }
+    const chain = getKeycatChain(chainId);
+    const publicClient = createPublicClient({
+      chain: chain as Chain,
+      transport: http()
+    });
+    if (this.implementation === "Stateless7702") {
+      const smartAccount = await toMetaMaskSmartAccount({
+        client: publicClient,
+        implementation: Implementation.Stateless7702,
+        address: this.ownerAccount.address,
+        signer: { account: this.ownerAccount }
+      });
+      return smartAccount.address as KeycatAddress;
+    }
+    const smartAccount = await toMetaMaskSmartAccount({
+      client: publicClient,
+      implementation: Implementation.Hybrid,
+      deployParams: [this.ownerAccount.address, [], [], []],
+      deploySalt: DEFAULT_DEPLOY_SALT,
+      signer: { account: this.ownerAccount }
+    });
+    return smartAccount.address as KeycatAddress;
   }
 
   private async sendGaslessTransaction(

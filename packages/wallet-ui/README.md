@@ -22,6 +22,9 @@ Required public endpoints:
 - `NEXT_PUBLIC_ONESHOT_RELAYER_URL`: 1Shot JSON-RPC endpoint, for example
   `https://relayer.1shotapi.dev/relayers` on testnet.
 - `NEXT_PUBLIC_ONESHOT_WEBHOOK_URL`: optional local demo webhook URL only.
+- `NEXT_PUBLIC_VENICE_X402_ENDPOINT`: x402-protected AI review endpoint. It
+  must advertise an ERC-7710 EVM payment option; see `BLOCKERS.md` for the
+  current Venice public-docs delta.
 
 ## Manual Chunk 3/4 Script
 
@@ -38,8 +41,15 @@ Required public endpoints:
 9. Enable gasless mode in Keycat, then use the USDC approve button and confirm
    the calldata; Keycat submits the delegated execution through 1Shot and polls
    pending to terminal status.
-10. Create a second wallet with "Upgrade my key in place (EIP-7702)" and verify
+10. Enable AI transaction review in Keycat, approve the displayed `$0.25/day`
+   x402 delegation scope, then trigger KittySwap's USDC approve. The
+   confirmation should show an explanation, an "Unlimited token approval" flag,
+   and the x402 price when the endpoint returns a payment receipt.
+11. Disable AI transaction review and trigger the approve flow again. The
+   confirmation should return to the plain local flow with no AI review session
+   in memory.
+12. Create a second wallet with "Upgrade my key in place (EIP-7702)" and verify
    the authorization task through 1Shot before sending from the upgraded account.
-11. Lock Keycat, then unlock from the downloaded keystore file.
+13. Lock Keycat, then unlock from the downloaded keystore file.
 
 All signing and transaction submission happens inside the widget context. The SDK bridge only carries request data, results, and provider events.

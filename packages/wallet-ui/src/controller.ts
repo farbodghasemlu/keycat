@@ -6,8 +6,17 @@ import {
   isHex,
   type Chain,
 } from "viem";
+import {
+  createLocalTransactionReview,
+  createLocalTypedDataReview,
+  probeAiReviewScope,
+  toLoadingAiReview
+} from "./ai-review.js";
 import type {
   KeycatAddress,
+  KeycatAiReviewDelegationScope,
+  KeycatAiReviewRequest,
+  KeycatAiReviewResult,
   KeycatChainConfig,
   KeycatHex,
   KeycatSigner,
@@ -47,6 +56,7 @@ export type ConfirmationDetail = {
   description: string;
   rows: { label: string; value: string }[];
   raw?: { label: string; value: string };
+  aiReview?: KeycatAiReviewResult;
 };
 
 export type KeycatPendingRequest = {
@@ -70,12 +80,16 @@ export type KeycatControllerOptions = {
   rpcUrl?: string;
   publicRpc?: PublicRpcProxy;
   signer?: KeycatSigner;
+  aiReviewEndpoint?: string;
+  aiReviewFetch?: typeof fetch;
 };
 
 type InternalPendingRequest = KeycatPendingRequest & {
   resolve(value: unknown): void;
   reject(error: ProviderRpcError): void;
   execute(signer: KeycatSigner): Promise<unknown>;
+  aiReviewRequest?: KeycatAiReviewRequest;
+  aiReviewStarted?: boolean;
 };
 
 type StateListener = () => void;
@@ -167,6 +181,8 @@ export class KeycatProviderController implements KeycatProvider {
   private pending?: InternalPendingRequest;
   private pendingId = 0;
   private readonly publicRpc: PublicRpcProxy;
+  private readonly aiReviewEndpoint?: string;
+  private readonly aiReviewFetch?: typeof fetch;
   private readonly connectedOrigins = new Set<string>();
   private readonly stateListeners = new Set<StateListener>();
   private unsubscribeSigner?: () => void;
@@ -176,10 +192,19 @@ export class KeycatProviderController implements KeycatProvider {
   >();
   private snapshot: KeycatControllerSnapshot;
 
-  constructor({ chain, rpcUrl, publicRpc, signer }: KeycatControllerOptions) {
+  constructor({
+    chain,
+    rpcUrl,
+    publicRpc,
+    signer,
+    aiReviewEndpoint,
+    aiReviewFetch
+  }: KeycatControllerOptions) {
     this.chain = chain;
     this.rpcUrl = rpcUrl;
     this.signer = signer;
+    this.aiReviewEndpoint = aiReviewEndpoint;
+    this.aiReviewFetch = aiReviewFetch;
     this.unsubscribeSigner = signer?.subscribe?.(() => this.emitState());
     this.publicRpc =
       publicRpc ??
@@ -206,6 +231,7 @@ export class KeycatProviderController implements KeycatProvider {
     this.unsubscribeSigner = signer.subscribe?.(() => this.emitState());
     if (this.pending?.status === "needs-wallet") {
       this.pending.status = "confirm";
+      this.startAiReviewForPending(this.pending);
     }
     this.emitState();
   }
@@ -236,6 +262,37 @@ export class KeycatProviderController implements KeycatProvider {
       );
     }
     await this.signer.setGaslessMode(enabled);
+    this.emitState();
+  }
+
+  async prepareAiReviewScope(): Promise<KeycatAiReviewDelegationScope> {
+    if (!this.signer) {
+      throw new ProviderRpcError(4100, "Unlock Keycat before enabling AI review.");
+    }
+    return probeAiReviewScope({
+      endpoint: this.aiReviewEndpoint,
+      fetch: this.aiReviewFetch
+    });
+  }
+
+  async setAiReviewMode(
+    enabled: boolean,
+    scope?: KeycatAiReviewDelegationScope
+  ): Promise<void> {
+    if (!this.signer) {
+      throw new ProviderRpcError(4100, "Unlock Keycat before changing AI review.");
+    }
+    if (!this.signer.setAiReviewMode) {
+      throw new ProviderRpcError(
+        4200,
+        "The current Keycat signer does not support AI transaction review."
+      );
+    }
+    await this.signer.setAiReviewMode(enabled, {
+      endpoint: this.aiReviewEndpoint,
+      fetch: this.aiReviewFetch,
+      ...(scope ? { scope } : {})
+    });
     this.emitState();
   }
 
@@ -412,6 +469,10 @@ export class KeycatProviderController implements KeycatProvider {
       );
     }
     const { requestedAddress, typedData, raw } = parseTypedDataParams(params);
+    const aiReviewRequest = this.createTypedDataAiReviewRequest({
+      origin,
+      typedData
+    });
 
     return this.enqueueInteractive({
       origin,
@@ -429,8 +490,12 @@ export class KeycatProviderController implements KeycatProvider {
           },
           { label: "Message", value: compactJson(typedData.message) }
         ],
-        raw: { label: "Typed data JSON", value: raw }
+        raw: { label: "Typed data JSON", value: raw },
+        ...(aiReviewRequest
+          ? { aiReview: toLoadingAiReview(aiReviewRequest.local) }
+          : {})
       },
+      aiReviewRequest,
       execute: async (signer) => {
         assertRequestedAddress(signer.address, requestedAddress);
         this.connectedOrigins.add(origin);
@@ -451,6 +516,10 @@ export class KeycatProviderController implements KeycatProvider {
     }
     const transaction = parseTransactionRequest(params[0]);
     const value = transaction.value ?? 0n;
+    const aiReviewRequest = this.createTransactionAiReviewRequest({
+      origin,
+      transaction
+    });
 
     return this.enqueueInteractive({
       origin,
@@ -471,8 +540,12 @@ export class KeycatProviderController implements KeycatProvider {
         ],
         ...(transaction.data && transaction.data !== "0x"
           ? { raw: { label: "Calldata", value: transaction.data } }
+          : {}),
+        ...(aiReviewRequest
+          ? { aiReview: toLoadingAiReview(aiReviewRequest.local) }
           : {})
       },
+      aiReviewRequest,
       execute: async (signer) => {
         assertRequestedAddress(signer.address, transaction.from);
         if (transaction.chainId !== undefined && transaction.chainId !== this.chain.id) {
@@ -493,12 +566,14 @@ export class KeycatProviderController implements KeycatProvider {
     method,
     kind,
     detail,
+    aiReviewRequest,
     execute
   }: {
     origin: string;
     method: string;
     kind: ConfirmationKind;
     detail: ConfirmationDetail;
+    aiReviewRequest?: KeycatAiReviewRequest;
     execute(signer: KeycatSigner): Promise<unknown>;
   }): Promise<unknown> {
     if (this.pending) {
@@ -513,12 +588,97 @@ export class KeycatProviderController implements KeycatProvider {
         kind,
         status: this.signer ? "confirm" : "needs-wallet",
         detail,
+        aiReviewRequest,
         resolve,
         reject,
         execute
       };
+      this.startAiReviewForPending(this.pending);
       this.emitState();
     });
+  }
+
+  private createTransactionAiReviewRequest({
+    origin,
+    transaction
+  }: {
+    origin: string;
+    transaction: KeycatTransactionRequest;
+  }): KeycatAiReviewRequest | undefined {
+    if (this.signer?.getSnapshot?.().aiReview?.state !== "ready") {
+      return undefined;
+    }
+    const chainId = transaction.chainId ?? this.chain.id;
+    const local = createLocalTransactionReview({ transaction, chainId });
+    return {
+      kind: "transaction",
+      origin,
+      chainId,
+      transaction,
+      local
+    };
+  }
+
+  private createTypedDataAiReviewRequest({
+    origin,
+    typedData
+  }: {
+    origin: string;
+    typedData: KeycatTypedDataPayload;
+  }): KeycatAiReviewRequest | undefined {
+    if (this.signer?.getSnapshot?.().aiReview?.state !== "ready") {
+      return undefined;
+    }
+    const chainId =
+      typeof typedData.domain?.chainId === "number"
+        ? typedData.domain.chainId
+        : this.chain.id;
+    const local = createLocalTypedDataReview({ typedData, chainId });
+    return {
+      kind: "typed-data",
+      origin,
+      chainId,
+      typedData,
+      local
+    };
+  }
+
+  private startAiReviewForPending(pending: InternalPendingRequest): void {
+    if (
+      pending.aiReviewStarted ||
+      !pending.aiReviewRequest ||
+      pending.status === "needs-wallet" ||
+      !this.signer?.reviewWithAi
+    ) {
+      return;
+    }
+    pending.aiReviewStarted = true;
+    void this.signer
+      .reviewWithAi(pending.aiReviewRequest)
+      .then((review) => {
+        if (this.pending?.id !== pending.id) {
+          return;
+        }
+        pending.detail = {
+          ...pending.detail,
+          aiReview: review
+        };
+        this.emitState();
+      })
+      .catch(() => {
+        if (this.pending?.id !== pending.id) {
+          return;
+        }
+        pending.detail = {
+          ...pending.detail,
+          aiReview: {
+            ...pending.aiReviewRequest!.local,
+            status: "unavailable",
+            notice: "AI review unavailable. Showing local decode only."
+          }
+        };
+        this.emitState();
+      });
   }
 
   private getAccounts(origin: string): KeycatAddress[] {
