@@ -14,6 +14,7 @@ import {
 } from "./ai-review.js";
 import type {
   KeycatAddress,
+  KeycatActivityLogEntry,
   KeycatAiReviewDelegationScope,
   KeycatAiReviewRequest,
   KeycatAiReviewResult,
@@ -73,6 +74,7 @@ export type KeycatControllerSnapshot = {
   signer?: KeycatSignerSnapshot;
   isUnlocked: boolean;
   pending?: KeycatPendingRequest;
+  activity: KeycatActivityLogEntry[];
 };
 
 export type KeycatControllerOptions = {
@@ -185,6 +187,7 @@ export class KeycatProviderController implements KeycatProvider {
   private readonly aiReviewFetch?: typeof fetch;
   private readonly connectedOrigins = new Set<string>();
   private readonly stateListeners = new Set<StateListener>();
+  private readonly activity: KeycatActivityLogEntry[] = [];
   private unsubscribeSigner?: () => void;
   private readonly providerListeners = new Map<
     KeycatProviderEvent,
@@ -242,6 +245,7 @@ export class KeycatProviderController implements KeycatProvider {
     this.signer?.destroy();
     this.signer = undefined;
     this.connectedOrigins.clear();
+    this.activity.length = 0;
     if (this.pending) {
       this.pending.reject(new ProviderRpcError(4001, message));
       this.pending = undefined;
@@ -386,9 +390,16 @@ export class KeycatProviderController implements KeycatProvider {
     void pending
       .execute(signer)
       .then((result) => {
+        this.recordActivity(pending, "approved", result);
         pending.resolve(result);
       })
       .catch((error: unknown) => {
+        this.recordActivity(
+          pending,
+          "rejected",
+          undefined,
+          error instanceof Error ? error.message : "Request failed."
+        );
         pending.reject(
           error instanceof ProviderRpcError
             ? error
@@ -410,6 +421,7 @@ export class KeycatProviderController implements KeycatProvider {
     if (!this.pending) {
       return;
     }
+    this.recordActivity(this.pending, "rejected", undefined, message);
     this.pending.reject(new ProviderRpcError(4001, message));
     this.pending = undefined;
     this.emitState();
@@ -731,8 +743,28 @@ export class KeycatProviderController implements KeycatProvider {
           }
         : undefined,
       isUnlocked: this.signer !== undefined,
-      pending: this.pending ? toPublicPending(this.pending) : undefined
+      pending: this.pending ? toPublicPending(this.pending) : undefined,
+      activity: [...this.activity]
     };
+  }
+
+  private recordActivity(
+    pending: InternalPendingRequest,
+    status: KeycatActivityLogEntry["status"],
+    result?: unknown,
+    error?: string
+  ): void {
+    this.activity.unshift({
+      id: `${pending.id}:${Date.now()}`,
+      createdAt: Date.now(),
+      origin: pending.origin,
+      method: pending.method,
+      kind: pending.kind,
+      status,
+      ...(typeof result === "string" ? { result } : {}),
+      ...(error ? { error } : {})
+    });
+    this.activity.splice(50);
   }
 }
 

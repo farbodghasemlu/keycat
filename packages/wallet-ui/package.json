@@ -18,18 +18,20 @@
   "dependencies": {
     "@keycat/keystore": "workspace:*",
     "@keycat/shared": "workspace:*",
-    "@metamask/smart-accounts-kit": "^1.6.0",
-    "@metamask/x402": "^0.2.0",
-    "@x402/core": "^2.15.0",
-    "@x402/fetch": "^2.15.0",
-    "viem": "^2.40.1"
+    "@metamask/smart-accounts-kit": "1.6.0",
+    "@metamask/x402": "0.2.0",
+    "@x402/core": "2.15.0",
+    "@x402/fetch": "2.15.0",
+    "@zk-email/relayer-utils": "0.4.65",
+    "siwe": "2.3.2",
+    "viem": "2.40.1"
   },
   "peerDependencies": {
     "react": ">=18"
   },
   "devDependencies": {
-    "@types/react": "^19.2.7",
-    "react": "^19.2.1",
-    "vitest": "^4.0.15"
+    "@types/react": "19.2.17",
+    "react": "19.2.7",
+    "vitest": "4.1.8"
   }
 }

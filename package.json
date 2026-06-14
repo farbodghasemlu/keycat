@@ -11,7 +11,7 @@
     "dev:demo": "pnpm --filter @keycat/demo-dapp dev"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "typescript": "5.9.3",
+    "vitest": "4.1.8"
   }
 }

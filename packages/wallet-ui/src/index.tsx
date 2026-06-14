@@ -35,6 +35,11 @@ import {
   type KeycatRequestArguments,
   type KeycatRequestContext
 } from "./controller.js";
+import type {
+  KeycatTransportRequest,
+  KeycatTransportResponse,
+  KeycatWalletTransport
+} from "./transport.js";
 import {
   createPlainEoaSigner,
   createSmartAccountSigner,
@@ -53,9 +58,11 @@ import {
 } from "./recovery.js";
 import type {
   KeycatAddress,
+  KeycatActivityLogEntry,
   KeycatChainConfig,
   KeycatHex,
   KeycatAiReviewDelegationScope,
+  KeycatSignableMessage,
   KeycatSigner,
   KeycatSignerSnapshot,
   KeycatTransactionRequest,
@@ -71,7 +78,9 @@ export type {
   KeycatRequestArguments,
   KeycatRequestContext,
   KeycatChainConfig,
+  KeycatActivityLogEntry,
   KeycatAiReviewDelegationScope,
+  KeycatSignableMessage,
   KeycatSigner,
   KeycatSignerSnapshot,
   KeycatTransactionRequest,
@@ -85,6 +94,18 @@ export {
   serializeProviderError
 };
 export {
+  KEYCAT_SDK_SOURCE,
+  KEYCAT_WIDGET_SOURCE,
+  createKeycatWindowTransport,
+  readKeycatWidgetConfig
+} from "./transport.js";
+export type {
+  KeycatTransportRequest,
+  KeycatTransportResponse,
+  KeycatWalletTransport,
+  KeycatWidgetConfig
+} from "./transport.js";
+export {
   PlainEoaSigner,
   SmartAccountSigner,
   Upgraded7702Signer,
@@ -93,28 +114,45 @@ export {
   createSmartAccountSigner,
   createUpgraded7702Signer
 } from "./signer.js";
+export {
+  DEFAULT_RECOVERY_TIMELOCK_SECONDS,
+  ZK_EMAIL_RECOVERY_RELAYER_URL,
+  createRecoveryCommitment,
+  deriveRecoveryAccountSalt,
+  parseRecoveryControllerAddress,
+  readPendingRecovery,
+  readRecoveryConfig,
+  realRecoveryBlockedMessage,
+  submitMockRecoveryRequest,
+  submitRecoveryExecution
+} from "./recovery.js";
+export type {
+  PendingRecovery,
+  RecoveryCommitment,
+  RecoveryConfig
+} from "./recovery.js";
+export {
+  readActiveDelegations,
+  readActivityLog,
+  readErc20Balances,
+  readNativeBalance,
+  readRecoveryStatus,
+  useActiveDelegations,
+  useErc20Balances,
+  useKeycatActivityLog,
+  useNativeBalance,
+  useRecoveryStatus
+} from "./reads.js";
+export type {
+  KeycatActiveDelegation,
+  KeycatBalanceToken,
+  KeycatErc20Balance,
+  KeycatNativeBalance,
+  KeycatReadHookResult,
+  KeycatRecoveryReadStatus
+} from "./reads.js";
 
 export type KeycatWalletMode = "embedded" | "fullpage";
-
-export type KeycatTransportRequest = {
-  id: string;
-  origin: string;
-  method: string;
-  params?: unknown;
-};
-
-export type KeycatTransportResponse =
-  | { result: unknown }
-  | { error: { code: number; message: string; data?: unknown } };
-
-export type KeycatWalletTransport = {
-  subscribe(
-    handler: (request: KeycatTransportRequest) => void | Promise<void>
-  ): () => void;
-  respond(request: KeycatTransportRequest, response: KeycatTransportResponse): void;
-  emit(event: "accountsChanged" | "disconnect", params: unknown[]): void;
-  setVisible?(visible: boolean): void;
-};
 
 export type UseKeycatProviderOptions = {
   chain?: KeycatChainConfig;
@@ -129,6 +167,33 @@ export type UseKeycatProviderResult = {
   controller: KeycatProviderController;
   provider: KeycatProvider;
   snapshot: KeycatControllerSnapshot;
+};
+
+export type UseKeycatWalletStateOptions = {
+  controller: KeycatProviderController;
+  origin?: string;
+};
+
+export type UseKeycatWalletStateResult = {
+  snapshot: KeycatControllerSnapshot;
+  isUnlocked: boolean;
+  account?: KeycatAddress;
+  signerAddress?: KeycatAddress;
+  signer?: KeycatSignerSnapshot;
+  pending?: KeycatPendingRequest;
+  activity: KeycatActivityLogEntry[];
+  lock(message?: string): void;
+  requestAccounts(): Promise<KeycatAddress[]>;
+  signPersonalMessage(message: string): Promise<KeycatHex>;
+  signTypedData(payload: KeycatTypedDataPayload): Promise<KeycatHex>;
+  sendTransaction(transaction: KeycatTransactionRequest): Promise<KeycatHex>;
+  setGaslessMode(enabled: boolean): Promise<void>;
+  prepareAiReviewScope(): Promise<KeycatAiReviewDelegationScope>;
+  setAiReviewMode(
+    enabled: boolean,
+    scope?: KeycatAiReviewDelegationScope
+  ): Promise<void>;
+  cancelRecovery(controllerAddress: KeycatAddress): Promise<KeycatHex>;
 };
 
 export function useKeycatProvider({
@@ -171,6 +236,72 @@ export function useKeycatProvider({
   );
 
   return { controller, provider: controller, snapshot };
+}
+
+export function useKeycatWalletState({
+  controller,
+  origin = "keycat://local"
+}: UseKeycatWalletStateOptions): UseKeycatWalletStateResult {
+  const snapshot = useSyncExternalStore(
+    (listener) => controller.subscribe(listener),
+    () => controller.getSnapshot(),
+    () => controller.getSnapshot()
+  );
+
+  return useMemo(
+    () => ({
+      snapshot,
+      isUnlocked: snapshot.isUnlocked,
+      account: snapshot.address,
+      signerAddress: snapshot.signer?.signerAddress,
+      signer: snapshot.signer,
+      pending: snapshot.pending,
+      activity: snapshot.activity,
+      lock: (message?: string) => controller.lock(message),
+      requestAccounts: async () =>
+        controller.request(
+          { method: "eth_requestAccounts" },
+          { origin }
+        ) as Promise<KeycatAddress[]>,
+      signPersonalMessage: async (message: KeycatSignableMessage) =>
+        controller.request(
+          {
+            method: "personal_sign",
+            params: [typeof message === "string" ? message : message.raw, snapshot.address]
+          },
+          { origin }
+        ) as Promise<KeycatHex>,
+      signTypedData: async (payload: KeycatTypedDataPayload) => {
+        if (!snapshot.address) {
+          throw new ProviderRpcError(4100, "Unlock Keycat before signing typed data.");
+        }
+        return controller.request(
+          {
+            method: "eth_signTypedData_v4",
+            params: [snapshot.address, payload]
+          },
+          { origin }
+        ) as Promise<KeycatHex>;
+      },
+      sendTransaction: async (transaction: KeycatTransactionRequest) =>
+        controller.request(
+          {
+            method: "eth_sendTransaction",
+            params: [{ ...transaction, from: transaction.from ?? snapshot.address }]
+          },
+          { origin }
+        ) as Promise<KeycatHex>,
+      setGaslessMode: (enabled: boolean) => controller.setGaslessMode(enabled),
+      prepareAiReviewScope: () => controller.prepareAiReviewScope(),
+      setAiReviewMode: (
+        enabled: boolean,
+        scope?: KeycatAiReviewDelegationScope
+      ) => controller.setAiReviewMode(enabled, scope),
+      cancelRecovery: (controllerAddress: KeycatAddress) =>
+        controller.cancelRecovery(controllerAddress)
+    }),
+    [controller, origin, snapshot]
+  );
 }
 
 export type KeycatWalletProps = {
@@ -287,17 +418,24 @@ export function KeycatWallet({
         controller.lock("Locked because the tab was hidden.");
       }
     };
+    const lockForUnload = () => {
+      controller.lock("Locked because the tab was closed.");
+    };
     locker.start();
     for (const event of ["pointerdown", "mousemove", "keydown", "touchstart"]) {
       window.addEventListener(event, poke, { passive: true });
     }
     document.addEventListener("visibilitychange", lockIfHidden);
+    window.addEventListener("pagehide", lockForUnload);
+    window.addEventListener("beforeunload", lockForUnload);
     return () => {
       locker.stop();
       for (const event of ["pointerdown", "mousemove", "keydown", "touchstart"]) {
         window.removeEventListener(event, poke);
       }
       document.removeEventListener("visibilitychange", lockIfHidden);
+      window.removeEventListener("pagehide", lockForUnload);
+      window.removeEventListener("beforeunload", lockForUnload);
     };
   }, [
     autoLockMs,

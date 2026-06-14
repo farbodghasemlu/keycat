@@ -100,6 +100,17 @@ export type KeycatRecoveryStatus = {
   message?: string;
 };
 
+export type KeycatActivityLogEntry = {
+  id: string;
+  createdAt: number;
+  origin: string;
+  method: string;
+  kind: "connect" | "personal_sign" | "eth_signTypedData_v4" | "eth_sendTransaction";
+  status: "approved" | "rejected";
+  result?: string;
+  error?: string;
+};
+
 export type KeycatRecoveryConfigureOptions = {
   controllerAddress: KeycatAddress;
   emailGuardianCommitment: KeycatHex;

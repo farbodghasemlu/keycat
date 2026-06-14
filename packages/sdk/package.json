@@ -12,10 +12,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/emit-widget-sri.mjs",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
-    "vitest": "^4.0.15"
+    "vitest": "4.1.8"
   }
 }

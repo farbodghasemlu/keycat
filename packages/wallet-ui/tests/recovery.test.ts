@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import {
+  concatHex,
+  encodeAbiParameters,
+  encodeFunctionData,
+  getContractAddress
+} from "viem";
+import { deriveRecoveryAccountSalt } from "../src/recovery.js";
+import type { KeycatAddress, KeycatHex } from "../src/types.js";
+
+const KEYCAT_ERC1967_PROXY_CREATION_CODE =
+  "0x60806040526040516103c83803806103c883398181016040528101906100259190610277565b817f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc555f8151146100c9575f5f8373ffffffffffffffffffffffffffffffffffffffff16836040516100779190610315565b5f60405180830381855af49150503d805f81146100af576040519150601f19603f3d011682016040523d82523d5f602084013e6100b4565b606091505b5091509150816100c657805160208201fd5b50505b505061032b565b5f604051905090565b5f5ffd5b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f61010a826100e1565b9050919050565b61011a81610100565b8114610124575f5ffd5b50565b5f8151905061013581610111565b92915050565b5f5ffd5b5f5ffd5b5f601f19601f8301169050919050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52604160045260245ffd5b61018982610143565b810181811067ffffffffffffffff821117156101a8576101a7610153565b5b80604052505050565b5f6101ba6100d0565b90506101c68282610180565b919050565b5f67ffffffffffffffff8211156101e5576101e4610153565b5b6101ee82610143565b9050602081019050919050565b8281835e5f83830152505050565b5f61021b610216846101cb565b6101b1565b9050828152602081018484840111156102375761023661013f565b5b6102428482856101fb565b509392505050565b5f82601f83011261025e5761025d61013b565b5b815161026e848260208601610209565b91505092915050565b5f5f6040838503121561028d5761028c6100d9565b5b5f61029a85828601610127565b925050602083015167ffffffffffffffff8111156102bb576102ba6100dd565b5b6102c78582860161024a565b9150509250929050565b5f81519050919050565b5f81905092915050565b5f6102ef826102d1565b6102f981856102db565b93506103098185602086016101fb565b80840191505092915050565b5f61032082846102e5565b915081905092915050565b6091806103375f395ff3fe608060405236601057600e6018565b005b60166018565b005b5f7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc549050365f5f375f5f365f845af43d5f5f3e805f81146057573d5ff35b3d5ffdfea26469706673582212200ff48de9fdb33fceb11f131bc06cf25e527ab2211daf53cf9d7c63697ba8100264736f6c63430008210033" as KeycatHex;
+
+const EMAIL_AUTH_ABI = [
+  {
+    type: "function",
+    name: "initialize",
+    inputs: [
+      { name: "initialOwner", type: "address" },
+      { name: "accountSalt", type: "bytes32" },
+      { name: "controller", type: "address" }
+    ],
+    outputs: [],
+    stateMutability: "nonpayable"
+  }
+] as const;
+
+describe("ZK Email recovery salt", () => {
+  it("derives the fixed account salt that maps to the controller EmailAuth address", async () => {
+    const accountCode =
+      "0x1111111111111111111111111111111111111111111111111111111111111111" as KeycatHex;
+    const email = "guardian@example.com";
+    const account = "0x0000000000000000000000000000000000001001" as KeycatAddress;
+    const controller = "0x0000000000000000000000000000000000001002" as KeycatAddress;
+    const emailAuthImplementation =
+      "0x0000000000000000000000000000000000001003" as KeycatAddress;
+
+    const accountSalt = await deriveRecoveryAccountSalt({ email, accountCode });
+    expect(accountSalt).toBe(
+      "0x26e491b6621dc92f575d2819b7b750a3b1921e4037699fc80ee75be717a8b507"
+    );
+
+    const initData = encodeFunctionData({
+      abi: EMAIL_AUTH_ABI,
+      functionName: "initialize",
+      args: [account, accountSalt, controller]
+    });
+    const bytecode = concatHex([
+      KEYCAT_ERC1967_PROXY_CREATION_CODE,
+      encodeAbiParameters(
+        [{ type: "address" }, { type: "bytes" }],
+        [emailAuthImplementation, initData]
+      )
+    ]);
+    const guardianAddress = getContractAddress({
+      opcode: "CREATE2",
+      from: controller,
+      salt: accountSalt,
+      bytecode
+    });
+
+    expect(guardianAddress).toBe("0x25a8Be19EEcfd9c121e9906dE46C66f0Bb8Dbfc9");
+  });
+});

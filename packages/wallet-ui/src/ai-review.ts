@@ -27,6 +27,7 @@ import {
   parseAbi,
   type Account
 } from "viem";
+import { SiweMessage, generateNonce } from "siwe";
 import { KEYCAT_AI_REVIEW_MODEL, KEYCAT_AI_REVIEW_PROMPT_VERSION, KEYCAT_AI_REVIEW_SYSTEM_PROMPT } from "./ai-review-prompt.js";
 import type {
   KeycatAddress,
@@ -46,10 +47,13 @@ export const AI_REVIEW_PERIOD_SECONDS = 86_400 as const;
 export const AI_REVIEW_EXPIRY_SECONDS = 7 * 86_400;
 export const AI_REVIEW_TIMEOUT_MS = 5_000;
 export const NATIVE_VALUE_REVIEW_THRESHOLD_WEI = 100_000_000_000_000_000n;
+export const VENICE_API_URL = "https://api.venice.ai";
+export const VENICE_EVM_AUTH_CHAIN_ID = 8453;
 
 const TRANSFER_PAYEE_CALLDATA_INDEX = 4;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const UNLIMITED_APPROVAL_THRESHOLD = (1n << 255n) - 1n;
+const VENICE_SIGN_IN_EXPIRY_MS = 5 * 60 * 1000;
 
 const ERC20_ABI = parseAbi([
   "function approve(address spender,uint256 amount) returns (bool)",
@@ -108,6 +112,12 @@ type PaidJsonResult = {
   body: unknown;
   selectedRequirements?: PaymentRequirements;
   settlementAmount?: string;
+};
+
+type VeniceSiweAuth = {
+  address: KeycatAddress;
+  signMessage(message: string): Promise<KeycatHex>;
+  apiUrl?: string;
 };
 
 type VeniceModelReview = {
@@ -299,6 +309,7 @@ export async function requestVeniceAiReview({
   scope,
   parentPermissionContext,
   sessionAccount,
+  veniceAuth,
   fetch: fetchImpl = globalThis.fetch,
   signal
 }: {
@@ -306,6 +317,7 @@ export async function requestVeniceAiReview({
   scope: KeycatAiReviewDelegationScope;
   parentPermissionContext: Delegation[];
   sessionAccount: Account;
+  veniceAuth?: VeniceSiweAuth;
   fetch?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<KeycatAiReviewResult> {
@@ -322,21 +334,119 @@ export async function requestVeniceAiReview({
       disable_thinking: true
     }
   };
-  const paid = await postJsonWithX402({
-    endpoint: scope.endpoint,
-    body,
-    scope,
-    parentPermissionContext,
-    sessionAccount,
-    fetch: fetchImpl,
-    signal
-  });
-  const modelReview = parseVeniceReviewResponse(paid.body);
+  let paid: PaidJsonResult | undefined;
+  let reviewBody: unknown;
+  if (veniceAuth) {
+    const venice = await postJsonWithVeniceSiwe({
+      body,
+      auth: veniceAuth,
+      fetch: fetchImpl,
+      signal
+    });
+    reviewBody = venice.body;
+    paid = await postJsonWithX402({
+      endpoint: scope.endpoint,
+      body,
+      scope,
+      parentPermissionContext,
+      sessionAccount,
+      fetch: fetchImpl,
+      signal
+    });
+  } else {
+    paid = await postJsonWithX402({
+      endpoint: scope.endpoint,
+      body,
+      scope,
+      parentPermissionContext,
+      sessionAccount,
+      fetch: fetchImpl,
+      signal
+    });
+    reviewBody = paid.body;
+  }
+  const modelReview = parseVeniceReviewResponse(reviewBody);
   if (!modelReview) {
     return unavailableReview(request.local, "AI review returned an unreadable response.");
   }
-  const amount = paid.settlementAmount ?? paid.selectedRequirements?.amount;
+  const amount = paid?.settlementAmount ?? paid?.selectedRequirements?.amount;
   return mergeAiReview(request.local, modelReview, amount ? formatUsdPaid(amount) : undefined);
+}
+
+export async function postJsonWithVeniceSiwe({
+  body,
+  auth,
+  fetch: fetchImpl = globalThis.fetch,
+  signal
+}: {
+  body: unknown;
+  auth: VeniceSiweAuth;
+  fetch?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<{ body: unknown; balanceRemaining?: string }> {
+  const endpoint = `${normalizeVeniceApiUrl(auth.apiUrl)}/api/v1/chat/completions`;
+  const authHeader = await createVeniceSignInWithXHeader({
+    auth,
+    resourceUrl: endpoint
+  });
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "X-Sign-In-With-X": authHeader
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+  if (response.status === 402) {
+    throw new Error(
+      "Venice prepaid balance is insufficient for AI review. Top up the authenticated wallet's Venice x402 balance and try again."
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`Venice AI review request failed with HTTP ${response.status}.`);
+  }
+  const balanceRemaining = response.headers.get("X-Balance-Remaining") ?? undefined;
+  return {
+    body: await response.json(),
+    ...(balanceRemaining ? { balanceRemaining } : {})
+  };
+}
+
+export async function createVeniceSignInWithXHeader({
+  auth,
+  resourceUrl,
+  now = new Date()
+}: {
+  auth: VeniceSiweAuth;
+  resourceUrl: string;
+  now?: Date;
+}): Promise<string> {
+  const apiUrl = new URL(normalizeVeniceApiUrl(auth.apiUrl));
+  const address = getAddress(auth.address);
+  const message = new SiweMessage({
+    domain: apiUrl.host,
+    address,
+    statement: "Sign in to Venice AI",
+    uri: resourceUrl,
+    version: "1",
+    chainId: VENICE_EVM_AUTH_CHAIN_ID,
+    nonce: generateNonce(),
+    issuedAt: now.toISOString(),
+    expirationTime: new Date(now.getTime() + VENICE_SIGN_IN_EXPIRY_MS).toISOString()
+  });
+  const messageString = message.prepareMessage();
+  const signature = await auth.signMessage(messageString);
+  return encodeBase64Utf8(
+    JSON.stringify({
+      address,
+      message: messageString,
+      signature,
+      timestamp: now.getTime(),
+      chainId: VENICE_EVM_AUTH_CHAIN_ID
+    })
+  );
 }
 
 export async function postJsonWithX402({
@@ -784,6 +894,31 @@ function parseEip155Network(network: string): number {
     throw new Error(`Unsupported x402 network: ${network}.`);
   }
   return chainId;
+}
+
+function normalizeVeniceApiUrl(value?: string): string {
+  const url = new URL(value ?? VENICE_API_URL);
+  return url.origin;
+}
+
+function encodeBase64Utf8(value: string): string {
+  if (typeof globalThis.btoa === "function") {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+    return globalThis.btoa(binary);
+  }
+  const bufferCtor = (globalThis as unknown as {
+    Buffer?: {
+      from(input: string, encoding: "utf8"): { toString(encoding: "base64"): string };
+    };
+  }).Buffer;
+  if (!bufferCtor) {
+    throw new Error("No base64 encoder is available for Venice authentication.");
+  }
+  return bufferCtor.from(value, "utf8").toString("base64");
 }
 
 function formatUsdPaid(amountAtomic: string): string {

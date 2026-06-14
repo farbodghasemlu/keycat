@@ -1,4 +1,9 @@
 import {
+  generateAccountCode,
+  generateAccountSalt,
+  init as initZkEmailRelayerUtils
+} from "@zk-email/relayer-utils";
+import {
   createPublicClient,
   encodeFunctionData,
   getAddress,
@@ -26,7 +31,31 @@ export type PendingRecovery = {
   exists: boolean;
 };
 
+export type RecoveryConfig = {
+  emailGuardianCommitment: KeycatHex;
+  timelockSeconds: number;
+  configured: boolean;
+  permissionContext: KeycatHex;
+};
+
 export const RECOVERY_CONTROLLER_READ_ABI = [
+  {
+    type: "function",
+    name: "getRecoveryConfig",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "emailGuardianCommitment", type: "bytes32" },
+          { name: "timelockSeconds", type: "uint64" },
+          { name: "configured", type: "bool" },
+          { name: "permissionContext", type: "bytes" }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
   {
     type: "function",
     name: "getPendingRecovery",
@@ -88,6 +117,8 @@ const RECOVERY_CONTROLLER_WRITE_ABI = [
   }
 ] as const;
 
+let zkEmailRelayerUtilsReady: Promise<void> | undefined;
+
 export function parseRecoveryControllerAddress(
   value?: string | null
 ): KeycatAddress | undefined {
@@ -98,22 +129,33 @@ export function parseRecoveryControllerAddress(
 }
 
 export async function createRecoveryCommitment({
-  account,
   email
 }: {
   account: KeycatAddress;
   email: string;
 }): Promise<RecoveryCommitment> {
-  const accountCode = randomHex32();
-  const normalizedEmail = email.trim().toLowerCase();
-  const input = new TextEncoder().encode(
-    `keycat.zkemail.account-salt.v1:${account.toLowerCase()}:${normalizedEmail}:${accountCode}`
-  );
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", input);
+  await ensureZkEmailRelayerUtils();
+  const accountCode = normalizeRecoveryBytes32(await generateAccountCode(), "accountCode");
+  const accountSalt = await deriveRecoveryAccountSalt({ email, accountCode });
   return {
     accountCode,
-    accountSalt: bytesToHex(new Uint8Array(digest))
+    accountSalt
   };
+}
+
+export async function deriveRecoveryAccountSalt({
+  email,
+  accountCode
+}: {
+  email: string;
+  accountCode: KeycatHex;
+}): Promise<KeycatHex> {
+  await ensureZkEmailRelayerUtils();
+  const normalizedEmail = email.trim().toLowerCase();
+  return normalizeRecoveryBytes32(
+    await generateAccountSalt(normalizedEmail, accountCode),
+    "accountSalt"
+  );
 }
 
 export async function readPendingRecovery({
@@ -142,6 +184,35 @@ export async function readPendingRecovery({
     executeAfter: Number(result.executeAfter),
     emailNullifier: result.emailNullifier as KeycatHex,
     exists: result.exists
+  };
+}
+
+export async function readRecoveryConfig({
+  chain,
+  rpcUrl,
+  controllerAddress,
+  account
+}: {
+  chain: KeycatChainConfig;
+  rpcUrl?: string;
+  controllerAddress: KeycatAddress;
+  account: KeycatAddress;
+}): Promise<RecoveryConfig> {
+  const client = createPublicClient({
+    chain: chain as Chain,
+    transport: http(rpcUrl)
+  });
+  const result = await client.readContract({
+    address: controllerAddress,
+    abi: RECOVERY_CONTROLLER_READ_ABI,
+    functionName: "getRecoveryConfig",
+    args: [account]
+  });
+  return {
+    emailGuardianCommitment: result.emailGuardianCommitment as KeycatHex,
+    timelockSeconds: Number(result.timelockSeconds),
+    configured: result.configured,
+    permissionContext: result.permissionContext as KeycatHex
   };
 }
 
@@ -225,10 +296,22 @@ export async function submitRecoveryExecution({
 
 export function realRecoveryBlockedMessage(): string {
   return [
-    "ZK Email's documented relayer requires the recovery email address in its API to compute accountSalt.",
-    "Keycat does not send plaintext recovery email to APIs.",
-    "Use DEMO_MOCK_RECOVERY or a relayer flow that derives accountSalt only from the user's email submission."
+    "Real recovery is unavailable until the ZK Email relayer proof flow is wired.",
+    "Keycat derives accountSalt locally and never sends your email to an API.",
+    "Your email never appears on-chain in plaintext; the ZK Email relayer sees it only when you send recovery mail and cannot forge a proof."
   ].join(" ");
+}
+
+async function ensureZkEmailRelayerUtils(): Promise<void> {
+  zkEmailRelayerUtilsReady ??= initZkEmailRelayerUtils();
+  await zkEmailRelayerUtilsReady;
+}
+
+function normalizeRecoveryBytes32(value: unknown, label: string): KeycatHex {
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/u.test(value)) {
+    throw new Error(`ZK Email returned an invalid ${label}.`);
+  }
+  return value.toLowerCase() as KeycatHex;
 }
 
 async function relayOrSendDustFallback({

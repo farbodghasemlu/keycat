@@ -441,6 +441,10 @@ abstract class BundledSmartAccountSigner implements KeycatSigner {
       scope: session.scope,
       parentPermissionContext: session.parentPermissionContext,
       sessionAccount: session.sessionKey,
+      veniceAuth: {
+        address: this.address,
+        signMessage: (message) => this.signPersonalMessage(message)
+      },
       fetch: session.fetch,
       signal: abort.signal
     });

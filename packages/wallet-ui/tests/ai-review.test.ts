@@ -87,8 +87,8 @@ describe("AI transaction review", () => {
         }
       ]
     };
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const request = input instanceof Request ? input : new Request(input);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
       if (fetchImpl.mock.calls.length === 1) {
         return new Response(JSON.stringify({ error: "payment required" }), {
           status: 402,
@@ -210,6 +210,109 @@ describe("AI transaction review", () => {
     expect(result.status).toBe("unavailable");
     expect(result.summary).toBe(local.summary);
     expect(result.notice).toContain("unreadable");
+  });
+
+  it("uses Venice SIWE output for review text while settling x402 through the reference seller", async () => {
+    const local = createLocalTransactionReview({
+      chainId: 11155111,
+      transaction: {
+        to: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+        value: 1n
+      }
+    });
+    const paymentRequired = {
+      x402Version: 2,
+      resource: { url: scope.endpoint },
+      accepts: [
+        {
+          scheme: "exact",
+          network: scope.network,
+          asset: scope.stablecoinAddress,
+          amount: "3000",
+          payTo: scope.payeeAddress,
+          maxTimeoutSeconds: 60,
+          extra: {
+            assetTransferMethod: "erc7710",
+            facilitatorAddresses: [facilitator]
+          }
+        }
+      ]
+    };
+    const signedMessages: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url === "https://api.venice.ai/api/v1/chat/completions") {
+        expect(request.headers.get("X-Sign-In-With-X")).toBeTruthy();
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: "Venice live review text.",
+                    risks: ["Venice flagged a test risk"],
+                    severity: "medium"
+                  })
+                }
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (
+        !request.headers.get("X-PAYMENT") &&
+        !request.headers.get("PAYMENT-SIGNATURE")
+      ) {
+        return new Response(JSON.stringify({ error: "payment required" }), {
+          status: 402,
+          headers: {
+            "PAYMENT-REQUIRED": encodePaymentRequiredHeader(paymentRequired)
+          }
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "PAYMENT-RESPONSE": encodePaymentResponseHeader({
+            success: true,
+            transaction: `0x${"66".repeat(32)}`,
+            network: scope.network,
+            amount: "3000"
+          })
+        }
+      });
+    });
+
+    const result = await requestVeniceAiReview({
+      request: {
+        kind: "transaction",
+        origin: "https://kittyswap.example",
+        chainId: 11155111,
+        transaction: {
+          to: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+          value: 1n
+        },
+        local
+      },
+      scope,
+      parentPermissionContext: [parentDelegation()],
+      sessionAccount: sessionAccount(),
+      veniceAuth: {
+        address: payer,
+        async signMessage(message) {
+          signedMessages.push(message);
+          return `0x${"55".repeat(65)}`;
+        }
+      },
+      fetch: fetchImpl
+    });
+
+    expect(signedMessages[0]).toContain("Sign in to Venice AI");
+    expect(result.status).toBe("ready");
+    expect(result.summary).toBe("Venice live review text.");
+    expect(result.risks.some((risk) => risk.source === "venice")).toBe(true);
+    expect(result.pricePaid).toBe("$0.003 via x402");
   });
 
   it("builds the exact daily stablecoin/payee/expiry delegation scope", () => {
