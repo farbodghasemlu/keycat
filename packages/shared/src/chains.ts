@@ -1,17 +1,18 @@
 import type { Chain } from "viem";
 import { base, baseSepolia, sepolia } from "viem/chains";
 
-export type KeycatChainName = "sepolia" | "base-sepolia" | "base";
+// export type KeycatChainName = "sepolia" | "base-sepolia" | "base";
+export type KeycatChainName = "base-sepolia";
 
-export const DEFAULT_KEYCAT_CHAIN_NAME: KeycatChainName = "sepolia";
-export const DEFAULT_KEYCAT_CHAIN_ID = sepolia.id;
+export const DEFAULT_KEYCAT_CHAIN_NAME: KeycatChainName = "base-sepolia";
+export const DEFAULT_KEYCAT_CHAIN_ID = baseSepolia.id;
 export const KEYCAT_RECOVERY_CHAIN_NAME: KeycatChainName = "base-sepolia";
 export const KEYCAT_RECOVERY_CHAIN_ID = baseSepolia.id;
 
 export const KEYCAT_CHAINS = {
-  sepolia,
+  // sepolia,
   "base-sepolia": baseSepolia,
-  base
+  // base
 } as const satisfies Record<KeycatChainName, Chain>;
 
 export const KEYCAT_CHAIN_OPTIONS = Object.values(KEYCAT_CHAINS);

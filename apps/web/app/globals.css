@@ -1,0 +1,123 @@
+@import "tailwindcss";
+@import url("https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+/* Eclipse design tokens. v4 generates the utilities (bg-*, text-*, border-*,
+   font-*, rounded-*, max-w-site) from these. No tailwind.config needed. */
+@theme {
+  --color-base: #0a0a0f;
+  --color-surface: #15151e;
+  --color-surface2: #1c1c28;
+  --color-line: #272734;
+  --color-line2: #33333f;
+  --color-ink: #f3f3f7;
+  --color-muted: #9696a6;
+  --color-faint: #62626e;
+  --color-accent: #6e8bff;
+  --color-accent-bright: #8aa0ff;
+  --color-accent-tint: #a6b6ff;
+  --color-accent-deep: #5570e0;
+  --color-ok: #5cd0a8;
+
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-sans: "Satoshi", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-card: 20px;
+  --radius-pill: 9999px;
+
+  --container-site: 1180px;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-size: 17px;
+    line-height: 1.62;
+  }
+  ::selection {
+    background: rgba(110, 139, 255, 0.3);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+    border-radius: 5px;
+  }
+}
+
+@layer components {
+  .btn,
+  .btn-primary,
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-pill);
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s cubic-bezier(0.22, 0.7, 0.27, 1);
+  }
+  .btn-primary {
+    background: var(--color-accent);
+    color: var(--color-base);
+    padding: 0.75rem 1.25rem;
+  }
+  .btn-primary:hover {
+    background: var(--color-accent-bright);
+    transform: translateY(-1px);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--color-ink);
+    border: 1px solid var(--color-line2);
+    padding: 0.75rem 1.25rem;
+  }
+  .btn-ghost:hover {
+    border-color: var(--color-ink);
+  }
+  .btn-lg {
+    padding: 15px 28px;
+    font-size: 16px;
+  }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    border-radius: var(--radius-pill);
+    padding: 6px 12px;
+    color: var(--color-accent-tint);
+    background: rgba(110, 139, 255, 0.1);
+    border: 1px solid rgba(110, 139, 255, 0.24);
+  }
+  .tag::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--color-accent);
+  }
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}

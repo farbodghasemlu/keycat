@@ -317,6 +317,8 @@ export type KeycatWalletProps = {
   demoMockRecovery?: boolean;
   autoLockMs?: number;
   lockOnVisibilityHidden?: boolean;
+  controller?: KeycatProviderController;
+  suppressUnlockedHome?: boolean;
   transport?: KeycatWalletTransport;
 };
 
@@ -333,17 +335,25 @@ export function KeycatWallet({
   demoMockRecovery = false,
   autoLockMs = 10 * 60 * 1000,
   lockOnVisibilityHidden = true,
+  controller: controllerProp,
+  suppressUnlockedHome = false,
   transport
 }: KeycatWalletProps) {
   const chain = useMemo(
     () => chainOption ?? getKeycatChain(chainId),
     [chainId, chainOption]
   );
-  const { controller, snapshot } = useKeycatProvider({
+  const fallback = useKeycatProvider({
     chain,
     rpcUrl,
     aiReviewEndpoint: veniceX402Endpoint
   });
+  const controller = controllerProp ?? fallback.controller;
+  const snapshot = useSyncExternalStore(
+    (listener) => controller.subscribe(listener),
+    () => controller.getSnapshot(),
+    () => controller.getSnapshot()
+  );
   const signerOptions = useMemo(
     () => ({
       rpcUrl,
@@ -445,6 +455,9 @@ export function KeycatWallet({
   ]);
 
   if (!visible) {
+    return null;
+  }
+  if (suppressUnlockedHome && snapshot.isUnlocked && !snapshot.pending) {
     return null;
   }
 
@@ -712,9 +725,16 @@ function WelcomeScreen({
   return (
     <div className="kc-stack">
       <div className="kc-intro">
-        <div className="kc-cat-mark" aria-hidden="true">
-          <span />
-        </div>
+    <div className="kc-cat-mark" aria-hidden="true">
+      <svg viewBox="0 0 40 40" width="54" height="54">
+        <rect x="1" y="1" width="38" height="38" rx="11" fill="#6E8BFF" />
+        <path d="M11 16 13 8 20 14Z" fill="#0A0A0F" />
+        <path d="M29 16 27 8 20 14Z" fill="#0A0A0F" />
+        <rect x="9" y="13" width="22" height="19" rx="9.5" fill="#0A0A0F" />
+        <circle cx="16" cy="22" r="1.8" fill="#6E8BFF" />
+        <circle cx="24" cy="22" r="1.8" fill="#6E8BFF" />
+      </svg>
+    </div>
         <div>
           <h1>Non-custodial keystore wallet</h1>
           <p>Your encrypted Keycat file opens this wallet on any site that embeds it.</p>
@@ -1939,11 +1959,11 @@ function formatDuration(seconds: number): string {
   return `${seconds} seconds`;
 }
 
-const KEYCAT_STYLES = `
+export const KEYCAT_STYLES = `
 .kc-wallet {
-  color: #182322;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  line-height: 1.4;
+  color: #f3f3f7;
+  font-family: "Satoshi", system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
   width: 100%;
 }
 .kc-wallet * {
@@ -1954,26 +1974,27 @@ const KEYCAT_STYLES = `
   display: grid;
   place-items: center;
   padding: 14px;
-  background: rgba(12, 18, 20, 0.58);
+  background: rgba(6, 6, 10, 0.72);
+  backdrop-filter: blur(8px);
 }
 .kc-wallet--fullpage {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 32px 18px;
-  background: #f6f3ee;
+  background: transparent;
 }
 .kc-panel {
   width: min(100%, 420px);
-  border: 1px solid #d7ded7;
-  border-radius: 8px;
-  background: #fffefa;
-  box-shadow: 0 20px 70px rgba(19, 27, 30, 0.24);
-  padding: 18px;
+  border: 1px solid #272734;
+  border-radius: 20px;
+  background: #15151e;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  padding: 20px;
 }
 .kc-wallet--fullpage .kc-panel {
   width: min(100%, 760px);
-  padding: 24px;
+  padding: 26px;
 }
 .kc-header {
   align-items: center;
@@ -1983,13 +2004,16 @@ const KEYCAT_STYLES = `
   margin-bottom: 18px;
 }
 .kc-brand {
-  font-size: 1.05rem;
-  font-weight: 800;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .kc-subtitle {
-  color: #68736c;
+  color: #9696a6;
   font-size: 0.85rem;
   overflow-wrap: anywhere;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 .kc-header-actions {
   display: flex;
@@ -1997,16 +2021,20 @@ const KEYCAT_STYLES = `
 }
 .kc-icon-button {
   align-items: center;
-  background: #f0f3ef;
-  border: 1px solid #d6ded6;
-  border-radius: 8px;
-  color: #1d2b28;
+  background: #1c1c28;
+  border: 1px solid #272734;
+  border-radius: 10px;
+  color: #f3f3f7;
   cursor: pointer;
   display: inline-flex;
   font-size: 1rem;
   height: 34px;
   justify-content: center;
   width: 34px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.kc-icon-button:hover {
+  border-color: #33333f;
 }
 .kc-css-icon {
   display: inline-block;
@@ -2015,11 +2043,11 @@ const KEYCAT_STYLES = `
   width: 16px;
 }
 .kc-css-icon-settings {
-  border: 2px solid #1d2b28;
+  border: 2px solid #c6c6d0;
   border-radius: 999px;
 }
 .kc-css-icon-settings::before {
-  background: #1d2b28;
+  background: #c6c6d0;
   border-radius: 999px;
   content: "";
   height: 4px;
@@ -2029,8 +2057,8 @@ const KEYCAT_STYLES = `
   width: 4px;
 }
 .kc-css-icon-settings::after {
-  background: #1d2b28;
-  box-shadow: 0 -7px 0 #1d2b28, 0 7px 0 #1d2b28;
+  background: #c6c6d0;
+  box-shadow: 0 -7px 0 #c6c6d0, 0 7px 0 #c6c6d0;
   content: "";
   height: 3px;
   left: 5px;
@@ -2039,7 +2067,7 @@ const KEYCAT_STYLES = `
   width: 2px;
 }
 .kc-css-icon-lock::before {
-  border: 2px solid #1d2b28;
+  border: 2px solid #c6c6d0;
   border-bottom: 0;
   border-radius: 8px 8px 0 0;
   content: "";
@@ -2050,7 +2078,7 @@ const KEYCAT_STYLES = `
   width: 10px;
 }
 .kc-css-icon-lock::after {
-  background: #1d2b28;
+  background: #c6c6d0;
   border-radius: 2px;
   content: "";
   height: 8px;
@@ -2068,12 +2096,17 @@ const KEYCAT_STYLES = `
 .kc-stack p {
   margin: 0;
 }
+.kc-stack h1,
+.kc-stack h2 {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -0.015em;
+}
 .kc-stack h1 {
-  font-size: 1.45rem;
+  font-size: 1.4rem;
   line-height: 1.12;
 }
 .kc-stack h2 {
-  font-size: 1.22rem;
+  font-size: 1.2rem;
 }
 .kc-intro {
   align-items: center;
@@ -2084,58 +2117,21 @@ const KEYCAT_STYLES = `
 .kc-intro p,
 .kc-muted,
 .kc-request-description {
-  color: #68736c;
+  color: #9696a6;
   font-size: 0.92rem;
 }
 .kc-cat-mark {
   align-items: center;
   aspect-ratio: 1;
-  background: #de684f;
-  border-radius: 8px;
+  border-radius: 14px;
   display: grid;
   height: 54px;
   justify-items: center;
-  position: relative;
+  overflow: hidden;
 }
-.kc-cat-mark::before,
-.kc-cat-mark::after {
-  border-bottom: 18px solid #de684f;
-  border-left: 10px solid transparent;
-  border-right: 10px solid transparent;
-  content: "";
-  position: absolute;
-  top: -10px;
-}
-.kc-cat-mark::before {
-  left: 7px;
-  transform: rotate(-18deg);
-}
-.kc-cat-mark::after {
-  right: 7px;
-  transform: rotate(18deg);
-}
-.kc-cat-mark span {
-  background: #fffefa;
-  border-radius: 999px;
-  height: 10px;
-  position: relative;
-  width: 28px;
-}
-.kc-cat-mark span::before,
-.kc-cat-mark span::after {
-  background: #182322;
-  border-radius: 999px;
-  content: "";
-  height: 4px;
-  position: absolute;
-  top: -8px;
-  width: 4px;
-}
-.kc-cat-mark span::before {
-  left: 5px;
-}
-.kc-cat-mark span::after {
-  right: 5px;
+.kc-cat-mark svg {
+  height: 54px;
+  width: 54px;
 }
 .kc-action-grid {
   display: grid;
@@ -2144,76 +2140,100 @@ const KEYCAT_STYLES = `
 }
 .kc-primary,
 .kc-secondary {
-  border-radius: 8px;
+  border-radius: 12px;
   cursor: pointer;
   font: inherit;
-  font-weight: 750;
+  font-weight: 700;
   min-height: 44px;
   padding: 10px 12px;
+  transition: all 0.2s cubic-bezier(0.22, 0.7, 0.27, 1);
 }
 .kc-primary {
-  background: #1f8a6b;
-  border: 1px solid #1a7359;
-  color: white;
+  background: #6e8bff;
+  border: 1px solid #6e8bff;
+  color: #0a0a0f;
+}
+.kc-primary:hover:not(:disabled) {
+  background: #8aa0ff;
+  border-color: #8aa0ff;
+  transform: translateY(-1px);
 }
 .kc-secondary {
-  background: #f2f5f2;
-  border: 1px solid #d7ded7;
-  color: #1d2b28;
+  background: #1c1c28;
+  border: 1px solid #33333f;
+  color: #f3f3f7;
+}
+.kc-secondary:hover:not(:disabled) {
+  border-color: #f3f3f7;
 }
 .kc-primary:disabled,
 .kc-secondary:disabled {
   cursor: wait;
-  opacity: 0.62;
+  opacity: 0.5;
 }
 .kc-field {
   display: grid;
   gap: 6px;
 }
 .kc-field span {
-  color: #44514d;
+  color: #b7b7c2;
   font-size: 0.85rem;
   font-weight: 700;
 }
 .kc-field input {
-  background: #ffffff;
-  border: 1px solid #cfd8d1;
-  border-radius: 8px;
-  color: #182322;
+  background: #1c1c28;
+  border: 1px solid #272734;
+  border-radius: 12px;
+  color: #f3f3f7;
   font: inherit;
   min-height: 42px;
-  padding: 9px 10px;
+  padding: 9px 12px;
   width: 100%;
+  transition: border-color 0.2s;
+}
+.kc-field input::placeholder {
+  color: #62626e;
+}
+.kc-field input:focus {
+  border-color: #6e8bff;
+  outline: none;
 }
 .kc-toggle {
   align-items: center;
-  border: 1px solid #d7ded7;
-  border-radius: 8px;
+  background: #1c1c28;
+  border: 1px solid #272734;
+  border-radius: 12px;
   display: flex;
   gap: 10px;
   padding: 11px;
 }
 .kc-toggle input {
-  accent-color: #1f8a6b;
+  accent-color: #6e8bff;
 }
 .kc-toggle--split {
   display: grid;
   grid-template-columns: auto 1fr auto;
 }
 .kc-toggle small {
-  color: #68736c;
+  color: #9696a6;
   font-size: 0.78rem;
   text-transform: capitalize;
 }
 .kc-dropzone {
   align-items: center;
-  border: 1px dashed #9aa79e;
-  border-radius: 8px;
+  border: 1px dashed #33333f;
+  border-radius: 12px;
   cursor: pointer;
+  color: #9696a6;
   display: grid;
   min-height: 96px;
   padding: 16px;
   text-align: center;
+  transition: border-color 0.2s, color 0.2s;
+}
+.kc-dropzone:hover {
+  border-color: #6e8bff;
+  color: #f3f3f7;
 }
 .kc-dropzone input {
   height: 1px;
@@ -2223,24 +2243,28 @@ const KEYCAT_STYLES = `
 }
 .kc-file-summary,
 .kc-account-block {
-  background: #f5f8f5;
-  border: 1px solid #dbe3dc;
-  border-radius: 8px;
+  background: #1c1c28;
+  border: 1px solid #272734;
+  border-radius: 12px;
   display: grid;
   gap: 5px;
   padding: 12px;
   overflow-wrap: anywhere;
 }
 .kc-recovery-alert {
-  background: #fff0ed;
-  border: 1px solid #d76c5d;
-  border-radius: 8px;
-  color: #6f1d13;
+  background: rgba(110, 139, 255, 0.1);
+  border: 1px solid rgba(110, 139, 255, 0.35);
+  border-radius: 12px;
+  color: #f3f3f7;
   display: grid;
   gap: 8px;
   padding: 12px;
 }
+.kc-recovery-alert strong {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
 .kc-recovery-alert span {
+  color: #a6b6ff;
   font-size: 0.88rem;
   overflow-wrap: anywhere;
 }
@@ -2249,8 +2273,13 @@ const KEYCAT_STYLES = `
 }
 .kc-account-block span,
 .kc-file-summary span:last-child {
-  color: #68736c;
+  color: #9696a6;
   font-size: 0.85rem;
+}
+.kc-account-block strong,
+.kc-file-summary span:last-child,
+.kc-address-row strong {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 .kc-address-row {
   display: grid;
@@ -2260,33 +2289,36 @@ const KEYCAT_STYLES = `
 .kc-address-row strong {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-size: 0.86rem;
 }
 .kc-address-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: space-between;
+  color: #9696a6;
+  font-size: 0.82rem;
 }
 .kc-banner {
-  border-radius: 8px;
+  border-radius: 12px;
   font-size: 0.9rem;
   margin-bottom: 12px;
   padding: 10px 12px;
 }
 .kc-banner--danger {
-  background: #fff0ed;
-  border: 1px solid #e5aaa0;
-  color: #8a2618;
+  background: rgba(229, 120, 106, 0.12);
+  border: 1px solid rgba(229, 120, 106, 0.3);
+  color: #f2948c;
 }
 .kc-banner--success {
-  background: #edf8f2;
-  border: 1px solid #9acdb2;
-  color: #15573f;
+  background: rgba(92, 208, 168, 0.12);
+  border: 1px solid rgba(92, 208, 168, 0.3);
+  color: #7be0be;
 }
 .kc-banner--pending {
-  background: #fff8e8;
-  border: 1px solid #e4c375;
-  color: #5c4717;
+  background: rgba(110, 139, 255, 0.1);
+  border: 1px solid rgba(110, 139, 255, 0.28);
+  color: #a6b6ff;
 }
 .kc-strength {
   align-items: center;
@@ -2301,19 +2333,19 @@ const KEYCAT_STYLES = `
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .kc-strength span {
-  background: #e3e8e3;
+  background: #272734;
   border-radius: 99px;
   height: 7px;
 }
 .kc-strength .kc-strength-on {
-  background: #de684f;
+  background: #6e8bff;
 }
 .kc-strength small {
-  color: #68736c;
+  color: #9696a6;
 }
 .kc-detail-table {
-  border: 1px solid #dbe3dc;
-  border-radius: 8px;
+  border: 1px solid #272734;
+  border-radius: 12px;
   overflow: hidden;
 }
 .kc-detail-row {
@@ -2323,28 +2355,34 @@ const KEYCAT_STYLES = `
   padding: 10px 12px;
 }
 .kc-detail-row + .kc-detail-row {
-  border-top: 1px solid #dbe3dc;
+  border-top: 1px solid #272734;
 }
 .kc-detail-row span {
-  color: #68736c;
+  color: #9696a6;
 }
 .kc-detail-row strong {
-  font-weight: 700;
+  font-weight: 600;
   overflow-wrap: anywhere;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.86rem;
 }
 .kc-raw {
-  border: 1px solid #dbe3dc;
-  border-radius: 8px;
+  border: 1px solid #272734;
+  border-radius: 12px;
   padding: 10px 12px;
 }
 .kc-raw summary {
   cursor: pointer;
-  font-weight: 750;
+  font-weight: 700;
+  color: #c6c6d0;
 }
 .kc-raw code {
-  background: #f6f3ee;
-  border-radius: 6px;
+  background: #0e0e16;
+  border: 1px solid #272734;
+  border-radius: 8px;
+  color: #f3f3f7;
   display: block;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
   margin-top: 10px;
   max-height: 180px;
   overflow: auto;
@@ -2354,26 +2392,29 @@ const KEYCAT_STYLES = `
 }
 .kc-ai-review,
 .kc-scope-preview {
-  border: 1px solid #dbe3dc;
-  border-radius: 8px;
+  border: 1px solid #272734;
+  border-radius: 12px;
   display: grid;
   gap: 10px;
   padding: 12px;
 }
 .kc-ai-review--medium {
-  border-color: #e4c375;
+  border-color: rgba(110, 139, 255, 0.4);
 }
 .kc-ai-review--high {
-  border-color: #e5aaa0;
+  border-color: rgba(229, 120, 106, 0.4);
 }
 .kc-ai-review-head {
   align-items: center;
   display: flex;
   justify-content: space-between;
 }
+.kc-ai-review-head strong {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
 .kc-ai-review-head span,
 .kc-paid {
-  color: #68736c;
+  color: #9696a6;
   font-size: 0.82rem;
 }
 .kc-risk-list {
@@ -2384,20 +2425,20 @@ const KEYCAT_STYLES = `
 .kc-risk {
   border-radius: 999px;
   font-size: 0.78rem;
-  font-weight: 750;
+  font-weight: 700;
   padding: 4px 8px;
 }
 .kc-risk--low {
-  background: #edf8f2;
-  color: #15573f;
+  background: rgba(92, 208, 168, 0.14);
+  color: #7be0be;
 }
 .kc-risk--medium {
-  background: #fff8e8;
-  color: #5c4717;
+  background: rgba(110, 139, 255, 0.14);
+  color: #a6b6ff;
 }
 .kc-risk--high {
-  background: #fff0ed;
-  color: #8a2618;
+  background: rgba(229, 120, 106, 0.14);
+  color: #f2948c;
 }
 @media (max-width: 520px) {
   .kc-wallet--fullpage,

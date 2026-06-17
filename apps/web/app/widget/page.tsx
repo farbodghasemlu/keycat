@@ -37,7 +37,7 @@ export default function WidgetPage() {
       oneShotWebhookUrl={process.env.NEXT_PUBLIC_ONESHOT_WEBHOOK_URL}
       veniceX402Endpoint={process.env.NEXT_PUBLIC_VENICE_X402_ENDPOINT}
       recoveryControllerAddress={process.env.NEXT_PUBLIC_RECOVERY_CONTROLLER_ADDRESS}
-      demoMockRecovery={process.env.DEMO_MOCK_RECOVERY === "true"}
+      demoMockRecovery={process.env.NEXT_PUBLIC_DEMO_MOCK_RECOVERY === "true"}
       transport={transport}
     />
   );

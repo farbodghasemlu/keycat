@@ -19,7 +19,7 @@ export type KeycatRecoveryDeployment = {
 
 export const KEYCAT_RECOVERY_DEPLOYMENT = {
   chainId: KEYCAT_RECOVERY_CHAIN_ID,
-  keycatRecoveryController: "0x0000000000000000000000000000000000000000",
+  keycatRecoveryController: "0xEf16C4d27859F5D6Ab2506F7c3a1C0f199C18d89",
   zkEmail: {
     verifier: "0x3E5f29a7cCeb30D5FCD90078430CA110c2985716",
     userOverrideableDkimRegistry: "0x3D3935B3C030893f118a84C92C66dF1B9E4169d6",

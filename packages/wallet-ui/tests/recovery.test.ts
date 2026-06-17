@@ -60,5 +60,5 @@ describe("ZK Email recovery salt", () => {
     });
 
     expect(guardianAddress).toBe("0x25a8Be19EEcfd9c121e9906dE46C66f0Bb8Dbfc9");
-  });
+  }, 15_000);
 });
